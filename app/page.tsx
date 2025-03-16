@@ -7,6 +7,7 @@ import styles from "../styles/Home.module.css";
 import { MapContainer, TileLayer, Marker, GeoJSON, Popup } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from 'leaflet';
+import { FeatureCollection } from 'geojson';
 
 // Import shadcn UI components (adjust paths based on your project)
 import { Button } from "@/components/ui/button";
@@ -147,8 +148,7 @@ export default function Home() {
       drawing: drawingData,
     };
     try {
-      // Call the API route using a relative URL.
-      const response = await axios.post<GeoJsonObject>("/api/fit-heart", payload);
+      const response = await axios.post<FeatureCollection>("/api/fit-heart", payload);
       setResult(response.data);
     } catch (error) {
       console.error("Error submitting data:", error);
