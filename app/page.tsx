@@ -1,103 +1,265 @@
-import Image from "next/image";
+"use client";
+
+import React, { useState, useRef, useEffect } from "react";
+import Head from "next/head";
+import axios from "axios";
+import styles from "../styles/Home.module.css";
+import { MapContainer, TileLayer, Marker, GeoJSON, Popup } from "react-leaflet";
+import "leaflet/dist/leaflet.css";
+import L from 'leaflet';
+
+// Import shadcn UI components (adjust paths based on your project)
+import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+} from "@/components/ui/select";
+
+// Import the GeoJsonObject type
+import { GeoJsonObject } from "geojson";
+
+// This ensures Leaflet uses your images from the public folder.
+delete L.Icon.Default.prototype._getIconUrl;
+
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: '/marker-icon-2x.png',
+  iconUrl: '/marker-icon.png',
+  shadowUrl: '/marker-shadow.png',
+});
+
+// Define a Coordinates interface for location data
+interface Coordinates {
+  lat: number;
+  lng: number;
+}
+
+// Predefined cities with their coordinates (expand as needed)
+const cities: { [key: string]: Coordinates } = {
+  Munich: { lat: 48.1351, lng: 11.5820 },
+  Berlin: { lat: 52.5200, lng: 13.4050 },
+  Hamburg: { lat: 53.5511, lng: 9.9937 },
+};
+
+// A simple drawing canvas component that captures mouse-drawn points
+const DrawingCanvas: React.FC<{ onDrawEnd: (points: { x: number; y: number }[]) => void }> = ({
+  onDrawEnd,
+}) => {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [points, setPoints] = useState<{ x: number; y: number }[]>([]);
+
+  const handleMouseDown = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    setIsDrawing(true);
+    const rect = canvasRef.current!.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    setPoints([{ x, y }]);
+  };
+
+  const handleMouseMove = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!isDrawing) return;
+    const rect = canvasRef.current!.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    setPoints((prev) => [...prev, { x, y }]);
+    const context = canvasRef.current!.getContext("2d");
+    if (context) {
+      context.lineTo(x, y);
+      context.stroke();
+    }
+  };
+
+  const handleMouseUp = () => {
+    setIsDrawing(false);
+    onDrawEnd(points);
+  };
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const context = canvas.getContext("2d");
+      if (context) {
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        context.beginPath();
+        if (points.length > 0) {
+          context.moveTo(points[0].x, points[0].y);
+          points.forEach((pt) => context.lineTo(pt.x, pt.y));
+          context.stroke();
+        }
+      }
+    }
+  }, [points]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      width={400}
+      height={400}
+      style={{ border: "1px solid black" }}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
+    />
+  );
+};
 
 export default function Home() {
-  return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm/6 text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-[family-name:var(--font-geist-mono)] font-semibold">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const [userLocation, setUserLocation] = useState<Coordinates | null>(null);
+  const [selectedCity, setSelectedCity] = useState<string>("");
+  // Instead of any, we now type result as GeoJsonObject | null
+  const [result, setResult] = useState<GeoJsonObject | null>(null);
+  const [drawingData, setDrawingData] = useState<{ x: number; y: number }[]>([]);
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+  // Step 1: Get user's geolocation
+  const getUserLocation = () => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition((position) => {
+        setUserLocation({
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+        });
+      });
+    } else {
+      alert("Geolocation is not supported by your browser.");
+    }
+  };
+
+  // Step 1 alternative: select a city
+  const handleCitySelect = (city: string) => {
+    setSelectedCity(city);
+    if (cities[city]) {
+      setUserLocation(cities[city]);
+    }
+  };
+
+  // Capture the drawn shape points
+  const handleDrawingEnd = (points: { x: number; y: number }[]) => {
+    setDrawingData(points);
+  };
+
+  // Step 3: Submit data for shape fitting via your backend API
+  const handleSubmit = async () => {
+    const payload = {
+      location: userLocation,
+      drawing: drawingData,
+    };
+    try {
+      // Call the API route using a relative URL.
+      const response = await axios.post<GeoJsonObject>("/api/fit-heart", payload);
+      setResult(response.data);
+    } catch (error) {
+      console.error("Error submitting data:", error);
+    }
+  };
+  
+
+  // Download the fitted result as JSON
+  const handleDownload = () => {
+    if (result) {
+      const dataStr =
+        "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(result, null, 2));
+      const downloadAnchorNode = document.createElement("a");
+      downloadAnchorNode.setAttribute("href", dataStr);
+      downloadAnchorNode.setAttribute("download", "fitted_shape.json");
+      document.body.appendChild(downloadAnchorNode);
+      downloadAnchorNode.click();
+      downloadAnchorNode.remove();
+    }
+  };
+
+  // Use user location if available; otherwise default to Munich.
+  const mapCenter = userLocation || { lat: 48.1351, lng: 11.5820 };
+
+  return (
+    <div className={styles.container}>
+      <Head>
+        <title>Bike Routing & Shape Fitting</title>
+        <meta
+          name="description"
+          content="Interactive Bike Routing & Shape Fitting tool for cyclists. Plan your route, draw custom shapes, and optimize your ride."
+        />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        {/* Favicon */}
+        <link rel="icon" href="/favicon.ico" />
+        {/* Google Fonts */}
+        <link
+          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap"
+          rel="stylesheet"
+        />
+        {/* Optional: Link to an external CSS library for additional styling */}
+        <link
+          rel="stylesheet"
+          href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css"
+          integrity="sha512-Fo3rlrZj/kTc0L7Jw5f7S6TcJ1o1sK9sl7oMJ5cw5R4Z9TtFEqM7I2RyJdvZV/6kC9Z5xGniH2gCO0hrX+jBg=="
+          crossOrigin="anonymous"
+          referrerPolicy="no-referrer"
+        />
+      </Head>
+      <main className={styles.main}>
+        <h1>Bike Routing & Shape Fitting</h1>
+        <div className={styles.topRow}>
+          {/* Box 1: Input Parameters */}
+          <div className={styles.box}>
+            <h2>Location</h2>
+            <Button onClick={getUserLocation}>Get My Location</Button>
+            <p>Or select a city:</p>
+            <Select onValueChange={handleCitySelect} value={selectedCity}>
+              <SelectTrigger>{selectedCity ? selectedCity : "Select a city"}</SelectTrigger>
+              <SelectContent>
+                {Object.keys(cities).map((city) => (
+                  <SelectItem key={city} value={city}>
+                    {city}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {userLocation && (
+              <p>
+                {userLocation.lat.toFixed(4)}, {userLocation.lng.toFixed(4)}
+              </p>
+            )}
+          </div>
+
+          {/* Box 2: Drawing Canvas */}
+          <div className={styles.box}>
+            <h2>Draw Your Shape</h2>
+            <DrawingCanvas onDrawEnd={handleDrawingEnd} />
+            {drawingData.length > 0 && <p>{drawingData.length} points drawn.</p>}
+          </div>
+
+          {/* Box 3: Download Box */}
+          <div className={styles.box}>
+            <h2>Download Result</h2>
+            <Button onClick={handleSubmit}>Submit Data</Button>
+            {result && (
+              <Button onClick={handleDownload} variant="secondary">
+                Download JSON
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {/* Big Map Box */}
+        <div className={styles.mapBox}>
+          <MapContainer
+            center={[mapCenter.lat, mapCenter.lng] as [number, number]}
+            zoom={10}
+            style={{ height: "100%", width: "100%" }}
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
+            <TileLayer
+              attribution='&copy; <a href="http://osm.org/copyright">OpenStreetMap</a> contributors'
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+            <Marker position={[mapCenter.lat, mapCenter.lng]}>
+              <Popup>Your Location</Popup>
+            </Marker>
+            {result && <GeoJSON data={result} />}
+          </MapContainer>
         </div>
       </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
     </div>
   );
 }
