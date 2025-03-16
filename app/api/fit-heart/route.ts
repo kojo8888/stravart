@@ -1,10 +1,10 @@
-// app/api/fit-heart/route.ts
 import { NextResponse } from 'next/server';
 import { FeatureCollection } from 'geojson';
 import { readFileSync } from 'fs';
 import path from 'path';
-import fmin from 'fmin';
+import * as fmin from 'fmin'; // Import all exports from fmin
 
+// Define interfaces for our payload and for fmin's result.
 interface Coordinates {
   lat: number;
   lng: number;
@@ -15,8 +15,13 @@ interface Payload {
   drawing: { x: number; y: number }[];
 }
 
+interface FminResult {
+  x: number[];
+  f: number;
+}
+
 /**
- * Generate the heart shape as an array of [x, y] points.
+ * Generates a heart shape as an array of [x, y] points.
  */
 function generateHeart(numPoints: number = 200): number[][] {
   const result: number[][] = [];
@@ -30,7 +35,7 @@ function generateHeart(numPoints: number = 200): number[][] {
 }
 
 /**
- * Apply scaling, rotation, and translation to the heart shape.
+ * Transforms the heart shape with scaling, rotation, and translation.
  */
 function transformHeart(heart: number[][], params: number[]): number[][] {
   const [scale, theta, tx, ty] = params;
@@ -43,7 +48,7 @@ function transformHeart(heart: number[][], params: number[]): number[][] {
 }
 
 /**
- * Compute squared Euclidean distance between two points.
+ * Computes the squared Euclidean distance between two points.
  */
 function squaredDistance(a: number[], b: number[]): number {
   const dx = a[0] - b[0];
@@ -52,7 +57,7 @@ function squaredDistance(a: number[], b: number[]): number {
 }
 
 /**
- * Cost function: for each transformed heart point, find the closest node and sum the squared distances.
+ * The cost function for minimization.
  */
 function costFunction(params: number[], heart: number[][], coords: number[][]): number {
   const transformed = transformHeart(heart, params);
@@ -71,27 +76,26 @@ function costFunction(params: number[], heart: number[][], coords: number[][]): 
 }
 
 /**
- * Load network nodes from a GeoJSON file and run optimization.
- * This mimics your Python run_optimization.
+ * Runs the optimization process. Loads network nodes from a GeoJSON file,
+ * minimizes the cost function, and returns a GeoJSON FeatureCollection of the fitted heart shape.
  */
 function runOptimization(): FeatureCollection {
-  // Adjust the path to your GeoJSON file. Here we assume it's in the public folder.
+  // Construct the path to your GeoJSON file in the public folder.
   const filePath = path.join(process.cwd(), 'public', 'bavaria_bike_nodes.geojson');
   const fileData = readFileSync(filePath, 'utf-8');
   const nodesGeoJSON = JSON.parse(fileData);
-  
-  // Extract coordinates from each feature (assuming Point geometries)
+
+  // Extract coordinates from each feature (assuming Point geometries).
   const coords: number[][] = nodesGeoJSON.features.map((f: any) => f.geometry.coordinates);
-  
   const heart = generateHeart(200);
   const initialParams = [0.10, 0.01, 2.5, 2.5];
-  
+
   // Use fmin to minimize the cost function.
-  const result = fmin((params: number[]) => costFunction(params, heart, coords), initialParams);
+  const result: FminResult = fmin((params: number[]) => costFunction(params, heart, coords), initialParams);
   const bestParams = result.x;
   const fittedHeart = transformHeart(heart, bestParams);
-  
-  // Create GeoJSON features from the fitted heart.
+
+  // Build GeoJSON features from the fitted heart points.
   const features = fittedHeart.map(pt => ({
     type: "Feature",
     geometry: {
@@ -100,23 +104,26 @@ function runOptimization(): FeatureCollection {
     },
     properties: {},
   }));
-  
+
   const featureCollection: FeatureCollection = {
     type: "FeatureCollection",
     features,
   };
-  
+
   return featureCollection;
 }
 
+/**
+ * API POST handler.
+ * Receives a payload, runs the optimization, and returns a GeoJSON FeatureCollection.
+ */
 export async function POST(request: Request) {
   try {
     const payload: Payload = await request.json();
     console.log("Received payload:", payload);
-    
-    // Here you could use payload data if needed.
+
+    // You can integrate payload data if needed.
     const result = runOptimization();
-    
     return NextResponse.json(result);
   } catch (error) {
     console.error("Error processing request:", error);
