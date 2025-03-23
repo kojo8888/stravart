@@ -1,9 +1,8 @@
-// app/api/fit-heart/route.ts
 import { NextResponse } from 'next/server';
 import { FeatureCollection } from 'geojson';
 import { readFileSync } from 'fs';
 import path from 'path';
-import * as fmin from 'fmin';
+import * as fmin from 'fmin'; // Import all exports from fmin
 
 // Define interfaces for our payload and for fmin's result.
 interface Coordinates {
@@ -21,21 +20,6 @@ interface FminResult {
   f: number;
 }
 
-// Define interfaces for GeoJSON features.
-interface GeoJSONFeature {
-  type: string;
-  geometry: {
-    type: string;
-    coordinates: number[];
-  };
-  properties?: Record<string, unknown>;
-}
-
-interface ParsedGeoJSON {
-  type: string;
-  features: GeoJSONFeature[];
-}
-
 /**
  * Generates a heart shape as an array of [x, y] points.
  */
@@ -44,11 +28,7 @@ function generateHeart(numPoints: number = 200): number[][] {
   for (let i = 0; i < numPoints; i++) {
     const t = (2 * Math.PI * i) / numPoints;
     const x = 16 * Math.pow(Math.sin(t), 3);
-    const y =
-      13 * Math.cos(t) -
-      5 * Math.cos(2 * t) -
-      2 * Math.cos(3 * t) -
-      Math.cos(4 * t);
+    const y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
     result.push([x, y]);
   }
   return result;
@@ -79,11 +59,7 @@ function squaredDistance(a: number[], b: number[]): number {
 /**
  * The cost function for minimization.
  */
-function costFunction(
-  params: number[],
-  heart: number[][],
-  coords: number[][]
-): number {
+function costFunction(params: number[], heart: number[][], coords: number[][]): number {
   const transformed = transformHeart(heart, params);
   let total = 0;
   for (const point of transformed) {
@@ -107,19 +83,18 @@ function runOptimization(): FeatureCollection {
   // Construct the path to your GeoJSON file in the public folder.
   const filePath = path.join(process.cwd(), 'public', 'bavaria_bike_nodes.geojson');
   const fileData = readFileSync(filePath, 'utf-8');
-  const nodesGeoJSON = JSON.parse(fileData) as ParsedGeoJSON;
-  
-  // Explicitly type the parameter as GeoJSONFeature to avoid implicit any.
-  const coords: number[][] = nodesGeoJSON.features.map((f: GeoJSONFeature) => f.geometry.coordinates);
-  
+  const nodesGeoJSON = JSON.parse(fileData);
+
+  // Extract coordinates from each feature (assuming Point geometries).
+  const coords: number[][] = nodesGeoJSON.features.map((f: any) => f.geometry.coordinates);
   const heart = generateHeart(200);
   const initialParams = [0.10, 0.01, 2.5, 2.5];
-  
+
   // Use fmin to minimize the cost function.
   const result: FminResult = fmin((params: number[]) => costFunction(params, heart, coords), initialParams);
   const bestParams = result.x;
   const fittedHeart = transformHeart(heart, bestParams);
-  
+
   // Build GeoJSON features from the fitted heart points.
   const features = fittedHeart.map(pt => ({
     type: "Feature",
@@ -129,12 +104,12 @@ function runOptimization(): FeatureCollection {
     },
     properties: {},
   }));
-  
+
   const featureCollection: FeatureCollection = {
     type: "FeatureCollection",
     features,
   };
-  
+
   return featureCollection;
 }
 
@@ -146,8 +121,8 @@ export async function POST(request: Request) {
   try {
     const payload: Payload = await request.json();
     console.log("Received payload:", payload);
-    
-    // Integrate payload data if needed.
+
+    // You can integrate payload data if needed.
     const result = runOptimization();
     return NextResponse.json(result);
   } catch (error) {
