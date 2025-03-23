@@ -1,3 +1,4 @@
+// app/api/fit-heart/route.ts
 import { NextResponse } from 'next/server';
 import { FeatureCollection } from 'geojson';
 import { readFileSync } from 'fs';
@@ -20,7 +21,7 @@ interface FminResult {
   f: number;
 }
 
-// Define an interface for a GeoJSON feature
+// Define interfaces for GeoJSON features.
 interface GeoJSONFeature {
   type: string;
   geometry: {
@@ -30,7 +31,6 @@ interface GeoJSONFeature {
   properties?: Record<string, unknown>;
 }
 
-// Define an interface for our parsed GeoJSON object
 interface ParsedGeoJSON {
   type: string;
   features: GeoJSONFeature[];
@@ -107,21 +107,16 @@ function runOptimization(): FeatureCollection {
   // Construct the path to your GeoJSON file in the public folder.
   const filePath = path.join(process.cwd(), 'public', 'bavaria_bike_nodes.geojson');
   const fileData = readFileSync(filePath, 'utf-8');
-  
-  // Parse the file data as our defined GeoJSON type.
   const nodesGeoJSON = JSON.parse(fileData) as ParsedGeoJSON;
   
-  // Extract coordinates from each feature (assuming Point geometries).
-  const coords: number[][] = nodesGeoJSON.features.map(f => f.geometry.coordinates);
+  // Explicitly type the parameter as GeoJSONFeature to avoid implicit any.
+  const coords: number[][] = nodesGeoJSON.features.map((f: GeoJSONFeature) => f.geometry.coordinates);
   
   const heart = generateHeart(200);
   const initialParams = [0.10, 0.01, 2.5, 2.5];
   
   // Use fmin to minimize the cost function.
-  const result: FminResult = fmin(
-    (params: number[]) => costFunction(params, heart, coords),
-    initialParams
-  );
+  const result: FminResult = fmin((params: number[]) => costFunction(params, heart, coords), initialParams);
   const bestParams = result.x;
   const fittedHeart = transformHeart(heart, bestParams);
   
@@ -152,7 +147,7 @@ export async function POST(request: Request) {
     const payload: Payload = await request.json();
     console.log("Received payload:", payload);
     
-    // You can integrate payload data if needed.
+    // Integrate payload data if needed.
     const result = runOptimization();
     return NextResponse.json(result);
   } catch (error) {
