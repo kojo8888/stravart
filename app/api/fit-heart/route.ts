@@ -2,9 +2,9 @@ import { NextResponse } from 'next/server';
 import { FeatureCollection } from 'geojson';
 import { readFileSync } from 'fs';
 import path from 'path';
-import * as fmin from 'fmin'; // Import all exports from fmin
+import * as fmin from 'fmin'; // Optimization library
 
-// Define interfaces for our payload and for fmin's result.
+// Interfaces
 interface Coordinates {
   lat: number;
   lng: number;
@@ -12,7 +12,7 @@ interface Coordinates {
 
 interface Payload {
   location: Coordinates | null;
-  drawing: { x: number; y: number }[];
+  shape: string;
 }
 
 interface FminResult {
@@ -20,83 +20,86 @@ interface FminResult {
   f: number;
 }
 
-/**
- * Generates a heart shape as an array of [x, y] points.
- */
+// Generate heart shape (normalized)
 function generateHeart(numPoints: number = 200): number[][] {
   const result: number[][] = [];
   for (let i = 0; i < numPoints; i++) {
     const t = (2 * Math.PI * i) / numPoints;
     const x = 16 * Math.pow(Math.sin(t), 3);
-    const y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
+    const y =
+      13 * Math.cos(t) -
+      5 * Math.cos(2 * t) -
+      2 * Math.cos(3 * t) -
+      Math.cos(4 * t);
     result.push([x, y]);
   }
   return result;
 }
 
-/**
- * Transforms the heart shape with scaling, rotation, and translation.
- */
-function transformHeart(heart: number[][], params: number[]): number[][] {
+// Apply scale, rotation, translation
+function transformShape(shape: number[][], params: number[]): number[][] {
   const [scale, theta, tx, ty] = params;
   const cosTheta = Math.cos(theta);
   const sinTheta = Math.sin(theta);
-  return heart.map(([x, y]) => [
+  return shape.map(([x, y]) => [
     scale * (x * cosTheta - y * sinTheta) + tx,
     scale * (x * sinTheta + y * cosTheta) + ty,
   ]);
 }
 
-/**
- * Computes the squared Euclidean distance between two points.
- */
-function squaredDistance(a: number[], b: number[]): number {
-  const dx = a[0] - b[0];
-  const dy = a[1] - b[1];
-  return dx * dx + dy * dy;
-}
-
-/**
- * The cost function for minimization.
- */
-function costFunction(params: number[], heart: number[][], coords: number[][]): number {
-  const transformed = transformHeart(heart, params);
+// Cost function for optimization
+function costFunction(
+  params: number[],
+  shape: number[][],
+  coords: number[][]
+): number {
+  const transformed = transformShape(shape, params);
   let total = 0;
   for (const point of transformed) {
     let minDist = Infinity;
     for (const node of coords) {
-      const d = squaredDistance(point, node);
-      if (d < minDist) {
-        minDist = d;
-      }
+      const dx = point[0] - node[0];
+      const dy = point[1] - node[1];
+      const dist = dx * dx + dy * dy;
+      if (dist < minDist) minDist = dist;
     }
     total += minDist;
   }
   return total;
 }
 
-/**
- * Runs the optimization process. Loads network nodes from a GeoJSON file,
- * minimizes the cost function, and returns a GeoJSON FeatureCollection of the fitted heart shape.
- */
-function runOptimization(): FeatureCollection {
-  // Construct the path to your GeoJSON file in the public folder.
+// Main logic
+function runOptimization(shapeType: string, location: Coordinates | null): FeatureCollection {
+  // 1. Load the GeoJSON node network (adjust logic per city if needed)
   const filePath = path.join(process.cwd(), 'public', 'bavaria_bike_nodes.geojson');
   const fileData = readFileSync(filePath, 'utf-8');
   const nodesGeoJSON = JSON.parse(fileData);
-
-  // Extract coordinates from each feature (assuming Point geometries).
   const coords: number[][] = nodesGeoJSON.features.map((f: any) => f.geometry.coordinates);
-  const heart = generateHeart(200);
-  const initialParams = [0.10, 0.01, 2.5, 2.5];
 
-  // Use fmin to minimize the cost function.
-  const result: FminResult = fmin((params: number[]) => costFunction(params, heart, coords), initialParams);
-  const bestParams = result.x;
-  const fittedHeart = transformHeart(heart, bestParams);
+  // 2. Generate the shape
+  let shape: number[][];
+  if (shapeType === 'heart') {
+    shape = generateHeart(200);
+  } else {
+    throw new Error(`Shape "${shapeType}" is not supported`);
+  }
 
-  // Build GeoJSON features from the fitted heart points.
-  const features = fittedHeart.map(pt => ({
+  // 3. Set initial params: scale, rotation (radians), translate x/y (center of map)
+  const centerX = location?.lng || 11.582; // Default Munich
+  const centerY = location?.lat || 48.1351;
+
+  const initialParams = [0.01, 0, centerX, centerY];
+
+  // 4. Optimize shape to match nearby nodes
+  const result: FminResult = fmin(
+    (params: number[]) => costFunction(params, shape, coords),
+    initialParams
+  );
+
+  const fitted = transformShape(shape, result.x);
+
+  // 5. Build GeoJSON FeatureCollection
+  const features = fitted.map((pt) => ({
     type: "Feature",
     geometry: {
       type: "Point",
@@ -105,28 +108,22 @@ function runOptimization(): FeatureCollection {
     properties: {},
   }));
 
-  const featureCollection: FeatureCollection = {
+  return {
     type: "FeatureCollection",
     features,
   };
-
-  return featureCollection;
 }
 
-/**
- * API POST handler.
- * Receives a payload, runs the optimization, and returns a GeoJSON FeatureCollection.
- */
+// API Handler
 export async function POST(request: Request) {
   try {
     const payload: Payload = await request.json();
-    console.log("Received payload:", payload);
+    console.log("Payload received:", payload);
 
-    // You can integrate payload data if needed.
-    const result = runOptimization();
+    const result = runOptimization(payload.shape, payload.location);
     return NextResponse.json(result);
   } catch (error) {
-    console.error("Error processing request:", error);
-    return NextResponse.error();
+    console.error("Error generating shape:", error);
+    return new NextResponse("Internal Server Error", { status: 500 });
   }
 }

@@ -1,36 +1,41 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 🚴 Strava Art — Shape Fitting on Street Networks
 
-## Getting Started
+**Create bike routes that draw fun shapes (heart, boat, cat, etc.) across city streets!**
 
-First, run the development server:
+This project lets users choose a city and either pick a shape (heart, circle, square) or describe any shape in natural language ("boat", "tree", "smiley face"). The system fits the shape into the real-world street network using OpenStreetMap data and mathematical optimization.
+
+## 🗺 Features
+
+✅ Dynamic city selection (Munich, Berlin, Hamburg, or user’s location).  
+✅ Predefined shape options: heart, circle, square.  
+✅ **AI-powered free shape generation** via ChatGPT — just type what you want!  
+✅ Real street network data fetched from Overpass Turbo API.  
+✅ Shape fitting using mathematical optimization (minimizing distance to nearby street nodes).  
+✅ Result displayed on interactive Leaflet map.  
+✅ Download fitted shapes as GeoJSON.
+
+## 🏗 Architecture
+
+### Frontend (`page.tsx`)
+- Built with Next.js 14.
+- UI components: city selector, shape input (text), submit button, Leaflet map.
+- Posts data to `/api/fit-shape`.
+
+### Backend (`api/fit-shape/route.ts`)
+1. Receives city/location + shape name.
+2. Fetches local street network (1.5 km radius) using Overpass Turbo.
+3. If shape is **predefined** → generate coordinates.
+4. If shape is **custom** → query GPT-4o to get outline coordinates.
+5. Fits the shape into the street network using an optimization algorithm (minimizing distance between shape points and street nodes).
+6. Returns GeoJSON with the fitted points.
+
+## 🤖 OpenAI Integration
+
+For custom shapes, the backend calls the ChatGPT API (`gpt-4o`) with a prompt like:
+
+> "Given the shape name 'boat', return 100 outline coordinates (x,y) as a JSON array."
+
+**Environment variable required**:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
-
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxx

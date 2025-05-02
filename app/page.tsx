@@ -1,15 +1,12 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState } from "react";
 import Head from "next/head";
 import axios from "axios";
-import styles from "../styles/Home.module.css";
 import { MapContainer, TileLayer, Marker, GeoJSON, Popup } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
-import L from 'leaflet';
-import { FeatureCollection } from 'geojson';
-
-// Import shadcn UI components (adjust paths based on your project)
+import L from "leaflet";
+import { FeatureCollection } from "geojson";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -17,146 +14,83 @@ import {
   SelectItem,
   SelectTrigger,
 } from "@/components/ui/select";
-
-// Import the GeoJsonObject type
+import { Input } from "@/components/ui/input";
 import { GeoJsonObject } from "geojson";
 
-// This ensures Leaflet uses your images from the public folder.
 delete L.Icon.Default.prototype._getIconUrl;
-
 L.Icon.Default.mergeOptions({
-  iconRetinaUrl: '/marker-icon-2x.png',
-  iconUrl: '/marker-icon.png',
-  shadowUrl: '/marker-shadow.png',
+  iconRetinaUrl: "/marker-icon-2x.png",
+  iconUrl: "/marker-icon.png",
+  shadowUrl: "/marker-shadow.png",
 });
 
-// Define a Coordinates interface for location data
 interface Coordinates {
   lat: number;
   lng: number;
 }
 
-// Predefined cities with their coordinates (expand as needed)
-const cities: { [key: string]: Coordinates } = {
-  Munich: { lat: 48.1351, lng: 11.5820 },
-  Berlin: { lat: 52.5200, lng: 13.4050 },
+const cities: Record<string, Coordinates> = {
+  Munich: { lat: 48.1351, lng: 11.582 },
+  Berlin: { lat: 52.52, lng: 13.405 },
   Hamburg: { lat: 53.5511, lng: 9.9937 },
 };
 
-// A simple drawing canvas component that captures mouse-drawn points
-const DrawingCanvas: React.FC<{ onDrawEnd: (points: { x: number; y: number }[]) => void }> = ({
-  onDrawEnd,
-}) => {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [points, setPoints] = useState<{ x: number; y: number }[]>([]);
-
-  const handleMouseDown = (event: React.MouseEvent<HTMLCanvasElement>) => {
-    setIsDrawing(true);
-    const rect = canvasRef.current!.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    setPoints([{ x, y }]);
-  };
-
-  const handleMouseMove = (event: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDrawing) return;
-    const rect = canvasRef.current!.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    setPoints((prev) => [...prev, { x, y }]);
-    const context = canvasRef.current!.getContext("2d");
-    if (context) {
-      context.lineTo(x, y);
-      context.stroke();
-    }
-  };
-
-  const handleMouseUp = () => {
-    setIsDrawing(false);
-    onDrawEnd(points);
-  };
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (canvas) {
-      const context = canvas.getContext("2d");
-      if (context) {
-        context.clearRect(0, 0, canvas.width, canvas.height);
-        context.beginPath();
-        if (points.length > 0) {
-          context.moveTo(points[0].x, points[0].y);
-          points.forEach((pt) => context.lineTo(pt.x, pt.y));
-          context.stroke();
-        }
-      }
-    }
-  }, [points]);
-
-  return (
-    <canvas
-      ref={canvasRef}
-      width={400}
-      height={400}
-      style={{ border: "1px solid black" }}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
-    />
-  );
-};
-
-export default function Home() {
+const Home: React.FC = () => {
   const [userLocation, setUserLocation] = useState<Coordinates | null>(null);
   const [selectedCity, setSelectedCity] = useState<string>("");
-  // Instead of any, we now type result as GeoJsonObject | null
+  const [selectedShape, setSelectedShape] = useState<string>("");
   const [result, setResult] = useState<GeoJsonObject | null>(null);
-  const [drawingData, setDrawingData] = useState<{ x: number; y: number }[]>([]);
 
-  // Step 1: Get user's geolocation
   const getUserLocation = () => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition((position) => {
-        setUserLocation({
+        const loc = {
           lat: position.coords.latitude,
           lng: position.coords.longitude,
-        });
+        };
+        console.log("[FRONTEND] User location acquired:", loc);
+        setUserLocation(loc);
       });
     } else {
       alert("Geolocation is not supported by your browser.");
+      console.warn("[FRONTEND] Geolocation not supported.");
     }
   };
 
-  // Step 1 alternative: select a city
   const handleCitySelect = (city: string) => {
     setSelectedCity(city);
     if (cities[city]) {
+      console.log("[FRONTEND] City selected:", city);
       setUserLocation(cities[city]);
     }
   };
 
-  // Capture the drawn shape points
-  const handleDrawingEnd = (points: { x: number; y: number }[]) => {
-    setDrawingData(points);
+  const handleShapeSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setSelectedShape(e.target.value);
   };
 
-  // Step 3: Submit data for shape fitting via your backend API
   const handleSubmit = async () => {
+    if (!userLocation || !selectedShape) {
+      console.warn("[FRONTEND] Location or shape missing.");
+      return;
+    }
+
     const payload = {
       location: userLocation,
-      drawing: drawingData,
+      shape: selectedShape,
     };
+
+    console.log("[FRONTEND] Submitting payload to backend:", payload);
+
     try {
-      const response = await axios.post<FeatureCollection>("/api/fit-heart", payload);
+      const response = await axios.post<FeatureCollection>("/api/fit-shape", payload);
+      console.log("[FRONTEND] Received GeoJSON result from backend:", response.data);
       setResult(response.data);
     } catch (error) {
-      console.error("Error submitting data:", error);
+      console.error("[FRONTEND] Error submitting data to backend:", error);
     }
   };
-  
 
-  // Download the fitted result as JSON
   const handleDownload = () => {
     if (result) {
       const dataStr =
@@ -170,44 +104,29 @@ export default function Home() {
     }
   };
 
-  // Use user location if available; otherwise default to Munich.
-  const mapCenter = userLocation || { lat: 48.1351, lng: 11.5820 };
+  const mapCenter = userLocation || cities["Munich"];
 
   return (
-    <div className={styles.container}>
+    <div className="min-h-screen p-4 bg-white text-gray-900">
       <Head>
         <title>Bike Routing & Shape Fitting</title>
-        <meta
-          name="description"
-          content="Interactive Bike Routing & Shape Fitting tool for cyclists. Plan your route, draw custom shapes, and optimize your ride."
-        />
+        <meta name="description" content="Interactive Bike Routing & Shape Fitting tool." />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        {/* Favicon */}
         <link rel="icon" href="/favicon.ico" />
-        {/* Google Fonts */}
-        <link
-          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap"
-          rel="stylesheet"
-        />
-        {/* Optional: Link to an external CSS library for additional styling */}
-        <link
-          rel="stylesheet"
-          href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css"
-          integrity="sha512-Fo3rlrZj/kTc0L7Jw5f7S6TcJ1o1sK9sl7oMJ5cw5R4Z9TtFEqM7I2RyJdvZV/6kC9Z5xGniH2gCO0hrX+jBg=="
-          crossOrigin="anonymous"
-          referrerPolicy="no-referrer"
-        />
       </Head>
-      <main className={styles.main}>
-        <h1>Bike Routing & Shape Fitting</h1>
-        <div className={styles.topRow}>
-          {/* Box 1: Input Parameters */}
-          <div className={styles.box}>
-            <h2>Location</h2>
+
+      <main className="flex flex-col gap-6">
+        <h1 className="text-3xl font-bold text-center mb-4">Bike Routing & Shape Fitting</h1>
+
+        <div className="flex flex-col lg:flex-row gap-6">
+          <div className="flex-1 border rounded-xl p-4 shadow">
+            <h2 className="font-semibold mb-2">Location</h2>
             <Button onClick={getUserLocation}>Get My Location</Button>
-            <p>Or select a city:</p>
+            <p className="mt-2">Or select a city:</p>
             <Select onValueChange={handleCitySelect} value={selectedCity}>
-              <SelectTrigger>{selectedCity ? selectedCity : "Select a city"}</SelectTrigger>
+              <SelectTrigger className="mt-2">
+                {selectedCity || "Select a city"}
+              </SelectTrigger>
               <SelectContent>
                 {Object.keys(cities).map((city) => (
                   <SelectItem key={city} value={city}>
@@ -217,40 +136,41 @@ export default function Home() {
               </SelectContent>
             </Select>
             {userLocation && (
-              <p>
+              <p className="mt-2 text-sm text-gray-600">
                 {userLocation.lat.toFixed(4)}, {userLocation.lng.toFixed(4)}
               </p>
             )}
           </div>
 
-          {/* Box 2: Drawing Canvas */}
-          <div className={styles.box}>
-            <h2>Draw Your Shape</h2>
-            <DrawingCanvas onDrawEnd={handleDrawingEnd} />
-            {drawingData.length > 0 && <p>{drawingData.length} points drawn.</p>}
-          </div>
-
-          {/* Box 3: Download Box */}
-          <div className={styles.box}>
-            <h2>Download Result</h2>
-            <Button onClick={handleSubmit}>Submit Data</Button>
-            {result && (
-              <Button onClick={handleDownload} variant="secondary">
-                Download JSON
-              </Button>
-            )}
+          <div className="flex-1 border rounded-xl p-4 shadow">
+            <h2 className="font-semibold mb-2">Select or Describe Shape</h2>
+            <p className="mt-2">Or tell ChatGPT what form you are looking for:</p>
+            <Input
+              placeholder="e.g. a heart, boat, cat..."
+              className="mt-2"
+              value={selectedShape}
+              onChange={handleShapeSelect}
+            />
           </div>
         </div>
 
-        {/* Big Map Box */}
-        <div className={styles.mapBox}>
+        <div className="flex gap-4">
+          <Button onClick={handleSubmit}>Submit</Button>
+          {result && (
+            <Button onClick={handleDownload} variant="secondary">
+              Download JSON
+            </Button>
+          )}
+        </div>
+
+        <div className="h-[500px] w-full border rounded-xl overflow-hidden shadow">
           <MapContainer
-            center={[mapCenter.lat, mapCenter.lng] as [number, number]}
-            zoom={10}
+            center={[mapCenter.lat, mapCenter.lng]}
+            zoom={12}
             style={{ height: "100%", width: "100%" }}
           >
             <TileLayer
-              attribution='&copy; <a href="http://osm.org/copyright">OpenStreetMap</a> contributors'
+              attribution='&copy; OpenStreetMap contributors'
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             />
             <Marker position={[mapCenter.lat, mapCenter.lng]}>
@@ -262,4 +182,6 @@ export default function Home() {
       </main>
     </div>
   );
-}
+};
+
+export default Home;
