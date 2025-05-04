@@ -3,7 +3,10 @@
 import React, { useState } from "react";
 import Head from "next/head";
 import axios from "axios";
-
+import { MapContainer, TileLayer, Marker, GeoJSON, Popup } from "react-leaflet";
+import "leaflet/dist/leaflet.css";
+import L from "leaflet";
+import { FeatureCollection } from "geojson";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -12,9 +15,13 @@ import {
   SelectTrigger,
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
-import { Progress } from "@/components/ui/progress";
 import { GeoJsonObject } from "geojson";
-import { FeatureCollection } from "geojson";
+
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: "/marker-icon-2x.png",
+  iconUrl: "/marker-icon.png",
+  shadowUrl: "/marker-shadow.png",
+});
 
 interface Coordinates {
   lat: number;
@@ -32,7 +39,6 @@ const Home: React.FC = () => {
   const [selectedCity, setSelectedCity] = useState<string>("");
   const [selectedShape, setSelectedShape] = useState<string>("");
   const [result, setResult] = useState<GeoJsonObject | null>(null);
-  const [progress, setProgress] = useState<number>(0);
 
   const getUserLocation = () => {
     if (navigator.geolocation) {
@@ -76,7 +82,7 @@ const Home: React.FC = () => {
     console.log("[FRONTEND] Submitting payload to backend:", payload);
 
     try {
-      const response = await axios.post<FeatureCollection>("/api/fit-fetch", payload);
+      const response = await axios.post<FeatureCollection>("/api/fit-shape", payload);
       console.log("[FRONTEND] Received GeoJSON result from backend:", response.data);
       setResult(response.data);
     } catch (error) {
@@ -84,31 +90,18 @@ const Home: React.FC = () => {
     }
   };
 
-  const handleFetchNodes = async () => {
-    if (!userLocation) {
-      alert("Please select or provide a location first.");
-      return;
-    }
-  
-    setProgress(10); // initial progress when starting
-  
-    try {
-      const response = await axios.post<number[][]>("/api/fit-fetch", {
-        location: userLocation,
-      });
-      console.log("Fetched nodes:", response.data);
-      alert(`Fetched ${response.data.length} nodes. Check console for details.`);
-  
-      setProgress(100); // complete
-    } catch (error) {
-      console.error("Error fetching nodes:", error);
-      setProgress(0); // reset on error
-    } finally {
-      // Optionally reset to 0 after a short delay
-      setTimeout(() => setProgress(0), 1500);
+  const handleDownload = () => {
+    if (result) {
+      const dataStr =
+        "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(result, null, 2));
+      const downloadAnchorNode = document.createElement("a");
+      downloadAnchorNode.setAttribute("href", dataStr);
+      downloadAnchorNode.setAttribute("download", "fitted_shape.json");
+      document.body.appendChild(downloadAnchorNode);
+      downloadAnchorNode.click();
+      downloadAnchorNode.remove();
     }
   };
-  
 
   const mapCenter = userLocation || cities["Munich"];
 
@@ -162,15 +155,29 @@ const Home: React.FC = () => {
 
         <div className="flex gap-4">
           <Button onClick={handleSubmit}>Submit</Button>
-          <Button onClick={handleFetchNodes} variant="outline">
-             Test Fetch Nodes
-          </Button>
-          {progress > 0 && (
-          <Progress value={progress} className="w-full mt-4" />
+          {result && (
+            <Button onClick={handleDownload} variant="secondary">
+              Download JSON
+            </Button>
           )}
         </div>
 
-        
+        <div className="h-[500px] w-full border rounded-xl overflow-hidden shadow">
+          <MapContainer
+            center={[mapCenter.lat, mapCenter.lng]}
+            zoom={12}
+            style={{ height: "100%", width: "100%" }}
+          >
+            <TileLayer
+              attribution='&copy; OpenStreetMap contributors'
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            />
+            <Marker position={[mapCenter.lat, mapCenter.lng]}>
+              <Popup>Your Location</Popup>
+            </Marker>
+            {result && <GeoJSON data={result} />}
+          </MapContainer>
+        </div>
       </main>
     </div>
   );
