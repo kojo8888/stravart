@@ -59,28 +59,6 @@ const Home: React.FC = () => {
     setSelectedShape(e.target.value);
   };
 
-  const handleSubmit = async () => {
-    if (!userLocation || !selectedShape) {
-      console.warn("[FRONTEND] Location or shape missing.");
-      return;
-    }
-
-    const payload = {
-      location: userLocation,
-      shape: selectedShape,
-    };
-
-    console.log("[FRONTEND] Submitting payload to backend:", payload);
-
-    try {
-      const response = await axios.post<FeatureCollection>("/api/fit-fetch", payload);
-      console.log("[FRONTEND] Received GeoJSON result from backend:", response.data);
-      setResult(response.data);
-    } catch (error) {
-      console.error("[FRONTEND] Error submitting data to backend:", error);
-    }
-  };
-
   const handleFetchNodes = async () => {
     if (!userLocation) {
       alert("Please select or provide a location first.");
@@ -97,8 +75,6 @@ const Home: React.FC = () => {
       console.error("Error fetching nodes:", error);
     }
   };  
-
-  const mapCenter = userLocation || cities["Munich"];
 
   return (
     <div className="min-h-screen p-4 bg-white text-gray-900">
@@ -147,16 +123,11 @@ const Home: React.FC = () => {
             />
           </div>
         </div>
-
         <div className="flex gap-4">
-          <Button onClick={handleSubmit}>Submit</Button>
           <Button onClick={handleFetchNodes} variant="outline">
              Test Fetch Nodes
           </Button>
-
         </div>
-
-        
       </main>
     </div>
   );
