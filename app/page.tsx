@@ -11,8 +11,6 @@ import {
   SelectTrigger,
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
-import { GeoJsonObject } from "geojson";
-import { FeatureCollection } from "geojson";
 
 interface Coordinates {
   lat: number;
@@ -29,7 +27,7 @@ const Home: React.FC = () => {
   const [userLocation, setUserLocation] = useState<Coordinates | null>(null);
   const [selectedCity, setSelectedCity] = useState<string>("");
   const [selectedShape, setSelectedShape] = useState<string>("");
-  const [result, setResult] = useState<GeoJsonObject | null>(null);
+  const [selectedSize, setSelectedSize] = useState<string>("1500");
 
   const getUserLocation = () => {
     if (navigator.geolocation) {
@@ -59,6 +57,10 @@ const Home: React.FC = () => {
     setSelectedShape(e.target.value);
   };
 
+  const handleSizeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setSelectedSize(e.target.value);
+  };  
+
   const handleFetchNodes = async () => {
     if (!userLocation) {
       alert("Please select or provide a location first.");
@@ -68,6 +70,7 @@ const Home: React.FC = () => {
     try {
       const response = await axios.post<number[][]>("/api/fit-fetch", {
         location: userLocation,
+        radius: parseInt(selectedSize) || 1500
       });
       console.log("Fetched nodes:", response.data);
       alert(`Fetched ${response.data.length} nodes. Check console for details.`);
@@ -110,6 +113,13 @@ const Home: React.FC = () => {
                 {userLocation.lat.toFixed(4)}, {userLocation.lng.toFixed(4)}
               </p>
             )}
+            <p className="mt-2">And define the size im meter:</p>
+            <Input
+              placeholder="Umkreis in Metern"
+              className="mt-2"
+              value={selectedSize}
+              onChange={handleSizeChange}
+            />
           </div>
 
           <div className="flex-1 border rounded-xl p-4 shadow">

@@ -6,17 +6,12 @@ interface Coordinates {
   lng: number;
 }
 
-interface Payload {
-  location: Coordinates | null;
-}
-
 // ---------- FETCH STREET NODES ----------
-
-async function fetchStreetNodes(location: Coordinates): Promise<number[][]> {
+async function fetchStreetNodes(location: Coordinates, radius: number): Promise<number[][]> {
   const overpassQuery = `
     [out:json][timeout:25];
     (
-      way["highway"](around:1500,${location.lat},${location.lng});
+      way["highway"](around:${radius},${location.lat},${location.lng});
     );
     out geom;
   `;
@@ -55,20 +50,19 @@ async function fetchStreetNodes(location: Coordinates): Promise<number[][]> {
 }
 
 // ---------- POST HANDLER ----------
-
 export async function POST(req: Request) {
   try {
     const body = await req.json();
     const location = body.location as Coordinates | null;
+    const radius = typeof body.radius === "number" ? body.radius : 1500;
 
     if (!location) {
       console.error("[BACKEND] No location provided in payload.");
       return NextResponse.json({ error: "Location is required." }, { status: 400 });
     }
 
-    const nodes = await fetchStreetNodes(location);
+    const nodes = await fetchStreetNodes(location, radius);
 
-    // Return the plain coordinates array for now
     return NextResponse.json(nodes);
   } catch (err: any) {
     console.error("[BACKEND] Unexpected error:", err);
