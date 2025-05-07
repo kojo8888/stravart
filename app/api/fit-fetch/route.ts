@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import { FeatureCollection } from 'geojson';
 
 interface Coordinates {
   lat: number;
