@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { Feature, FeatureCollection, Point } from "geojson";
-import { fmin } from 'fmin'; // Importing fmin with proper type declaration
+import fmin from 'fmin';
 
 interface Coordinates {
   lat: number;
