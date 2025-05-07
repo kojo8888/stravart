@@ -63,8 +63,13 @@ export async function POST(req: Request) {
     const nodes = await fetchStreetNodes(location, radius);
 
     return NextResponse.json(nodes);
-  } catch (err: any) {
+  } catch (err: unknown) {
+    let errorMessage = "Unknown error";
+    if (err instanceof Error) {
+      errorMessage = err.message;
+    }
+    
     console.error("[BACKEND] Unexpected error:", err);
-    return NextResponse.json({ error: err.message || "Unknown error" }, { status: 500 });
+    return NextResponse.json({ error: errorMessage }, { status: 500 });    
   }
 }
