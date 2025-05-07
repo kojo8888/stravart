@@ -28,6 +28,7 @@ const Home: React.FC = () => {
   const [selectedCity, setSelectedCity] = useState<string>("");
   const [selectedShape, setSelectedShape] = useState<string>("");
   const [selectedSize, setSelectedSize] = useState<string>("1500");
+  const [result, setResult] = useState<any | null>(null);
 
   const getUserLocation = () => {
     if (navigator.geolocation) {
@@ -59,37 +60,56 @@ const Home: React.FC = () => {
 
   const handleSizeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setSelectedSize(e.target.value);
-  };  
+  };
 
-  const handleFetchNodes = async () => {
+  const handleFetch = async () => {
     if (!userLocation) {
       alert("Please select or provide a location first.");
       return;
     }
-  
+
     try {
-      const response = await axios.post<number[][]>("/api/fit-fetch", {
+      const response = await axios.post("/api/fit-fetch", {
         location: userLocation,
-        radius: parseInt(selectedSize) || 1500
+        radius: parseInt(selectedSize) || 1500,
+        shape: selectedShape
       });
-      console.log("Fetched nodes:", response.data);
-      alert(`Fetched ${response.data.length} nodes. Check console for details.`);
+      console.log("[FRONTEND] Response from backend:", response.data);
+      setResult(response.data);
+      alert("Fetch complete. Check console for details.");
     } catch (error) {
-      console.error("Error fetching nodes:", error);
+      console.error("[FRONTEND] Error fetching data:", error);
     }
-  };  
+  };
+
+  const handleDownload = () => {
+    if (!result) return;
+
+    const dataStr =
+      "data:text/json;charset=utf-8," +
+      encodeURIComponent(JSON.stringify(result, null, 2));
+    const downloadAnchorNode = document.createElement("a");
+    downloadAnchorNode.setAttribute("href", dataStr);
+    downloadAnchorNode.setAttribute("download", "result.geojson");
+    document.body.appendChild(downloadAnchorNode);
+    downloadAnchorNode.click();
+    downloadAnchorNode.remove();
+  };
 
   return (
     <div className="min-h-screen p-4 bg-white text-gray-900">
       <Head>
-        <title>Bike Routing & Shape Fitting</title>
-        <meta name="description" content="Interactive Bike Routing & Shape Fitting tool." />
+        <title>Strava Art</title>
+        <meta name="description" content="Create Strava Art by fitting shapes to street nodes." />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <link rel="icon" href="/favicon.ico" />
       </Head>
 
       <main className="flex flex-col gap-6">
-        <h1 className="text-3xl font-bold text-center mb-4">Bike Routing & Shape Fitting</h1>
+        <h1 className="text-3xl font-bold text-center mb-4">Strava Art</h1>
+        <p className="text-center mb-4">
+          Create your own Strava Art by selecting a location and shape.
+        </p>
 
         <div className="flex flex-col lg:flex-row gap-6">
           <div className="flex-1 border rounded-xl p-4 shadow">
@@ -113,7 +133,7 @@ const Home: React.FC = () => {
                 {userLocation.lat.toFixed(4)}, {userLocation.lng.toFixed(4)}
               </p>
             )}
-            <p className="mt-2">And define the size im meter:</p>
+            <p className="mt-2">Define the size in meters:</p>
             <Input
               placeholder="Umkreis in Metern"
               className="mt-2"
@@ -124,18 +144,22 @@ const Home: React.FC = () => {
 
           <div className="flex-1 border rounded-xl p-4 shadow">
             <h2 className="font-semibold mb-2">Select or Describe Shape</h2>
-            <p className="mt-2">Or tell ChatGPT what form you are looking for:</p>
+            <p className="mt-2">Type a shape name or description:</p>
             <Input
-              placeholder="e.g. a heart, boat, cat..."
+              placeholder="e.g. heart, boat, cat..."
               className="mt-2"
               value={selectedShape}
               onChange={handleShapeSelect}
             />
           </div>
         </div>
+
         <div className="flex gap-4">
-          <Button onClick={handleFetchNodes} variant="outline">
-             Test Fetch Nodes
+          <Button onClick={handleFetch} variant="outline">
+            Run
+          </Button>
+          <Button onClick={handleDownload} variant="outline" disabled={!result}>
+            Download
           </Button>
         </div>
       </main>
