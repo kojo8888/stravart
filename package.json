@@ -20,7 +20,7 @@
     "fmin": "^0.0.4",
     "leaflet": "^1.9.4",
     "lucide-react": "^0.482.0",
-    "next": "15.2.2",
+    "next": "^15.3.2",
     "postcss": "^8.5.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -37,6 +37,8 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "15.2.2",
+    "eslint-config-prettier": "^10.1.3",
+    "prettier": "3.5.3",
     "tailwindcss": "^4.0.14",
     "tw-animate-css": "^1.2.9",
     "typescript": "^5"
