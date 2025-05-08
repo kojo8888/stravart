@@ -1,6 +1,13 @@
+export const runtime = "nodejs";
+
+
 import { NextResponse } from 'next/server';
 import type { Feature, FeatureCollection, Point } from "geojson";
-import fmin from 'fmin';
+
+// ---- fmin import workaround for CommonJS/ESM ----
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const fmin = require('fmin');
+
 
 interface Coordinates {
   lat: number;
