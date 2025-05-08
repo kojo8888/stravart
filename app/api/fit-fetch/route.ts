@@ -1,13 +1,5 @@
-export const runtime = "nodejs";
-
-
 import { NextResponse } from 'next/server';
 import type { Feature, FeatureCollection, Point } from "geojson";
-
-// ---- fmin import workaround for CommonJS/ESM ----
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const fmin = require('fmin');
-
 
 interface Coordinates {
   lat: number;
@@ -22,7 +14,63 @@ interface Payload {
 
 interface FminResult {
   x: number[];
-  f: number;
+  fx: number;
+}
+
+// ---------- Nelder-Mead Optimizer (no dependency) ----------
+function nelderMead(
+  f: (x: number[]) => number,
+  x0: number[],
+  maxIterations = 200
+): { x: number[]; fx: number } {
+  const alpha = 1;
+  const gamma = 2;
+  const rho = 0.5;
+  const sigma = 0.5;
+
+  const n = x0.length;
+  let simplex = [x0];
+  for (let i = 0; i < n; i++) {
+    const x = x0.slice();
+    x[i] += 0.05;
+    simplex.push(x);
+  }
+
+  for (let iter = 0; iter < maxIterations; iter++) {
+    simplex.sort((a, b) => f(a) - f(b));
+    const best = simplex[0];
+    const worst = simplex[n];
+
+    const centroid = Array(n).fill(0);
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) centroid[j] += simplex[i][j] / n;
+    }
+
+    const reflected = centroid.map((c, i) => c + alpha * (c - worst[i]));
+    if (f(reflected) < f(simplex[n - 1])) {
+      simplex[n] = reflected;
+      continue;
+    }
+
+    const expanded = centroid.map((c, i) => c + gamma * (reflected[i] - c));
+    if (f(expanded) < f(reflected)) {
+      simplex[n] = expanded;
+      continue;
+    }
+
+    const contracted = centroid.map((c, i) => c + rho * (worst[i] - c));
+    if (f(contracted) < f(worst)) {
+      simplex[n] = contracted;
+      continue;
+    }
+
+    for (let i = 1; i <= n; i++) {
+      simplex[i] = simplex[0].map((b, j) => b + sigma * (simplex[i][j] - b));
+    }
+  }
+
+  const best = simplex[0];
+  return { x: best, fx: f(best) };
 }
 
 // ---------- SHAPE GENERATOR ----------
@@ -137,7 +185,7 @@ async function runOptimization(
   const centerY = location.lat;
   const initialParams = [0.01, 0, centerX, centerY];
 
-  const result: FminResult = fmin(
+  const result: FminResult = nelderMead(
     (params: number[]) => costFunction(params, shape, coords),
     initialParams
   );
