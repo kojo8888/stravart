@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server'
-import KDBush from 'kdbush'
-import { around } from 'geokdbush'
+import RBush from 'rbush'
+import knn from 'rbush-knn'
 
 // ---------- Shape Generator ----------
-function generateHeart(numPoints = 200) {
+function generateHeart(numPoints = 80) {
     const result = []
     for (let i = 0; i < numPoints; i++) {
         const t = (2 * Math.PI * i) / numPoints
@@ -45,7 +45,7 @@ function costFunction(params, shape, coords) {
 }
 
 // ---------- Nelder-Mead ----------
-function nelderMead(f, x0, maxIterations = 200) {
+function nelderMead(f, x0, maxIterations = 100) {
     const alpha = 1,
         gamma = 2,
         rho = 0.5,
@@ -92,28 +92,27 @@ function nelderMead(f, x0, maxIterations = 200) {
     return { x: simplex[0], fx: f(simplex[0]) }
 }
 
-// ---------- Snap to Nearest Street Nodes ----------
+// ---------- Snap Points ----------
 function snapPointsToNodes(points, rawNodes) {
-    const nodes = rawNodes.map(([lon, lat]) => ({ lon, lat }))
+    const items = rawNodes.map(([lon, lat]) => ({
+        minX: lon,
+        minY: lat,
+        maxX: lon,
+        maxY: lat,
+        lon,
+        lat,
+    }))
 
-    if (!Array.isArray(nodes) || typeof nodes[0]?.lon !== 'number') {
-        throw new Error('KDTree nodes are malformed')
-    }
-
-    const index = new KDBush(
-        nodes,
-        (p) => p.lon,
-        (p) => p.lat
-    )
+    const index = new RBush()
+    index.load(items)
 
     return points.map(([lon, lat]) => {
-        const nearest = around(index, nodes, lon, lat, 1)[0]
-        if (!nearest) throw new Error('No nearest node found')
+        const [nearest] = knn(index, lon, lat, 1)
         return [nearest.lon, nearest.lat]
     })
 }
 
-// ---------- Fetch from Overpass ----------
+// ---------- Fetch Street Nodes ----------
 async function fetchStreetNodes(location, radius) {
     const query = `
     [out:json][timeout:25];
@@ -131,8 +130,8 @@ async function fetchStreetNodes(location, radius) {
     if (!res.ok) throw new Error('Overpass API fetch failed')
 
     const data = await res.json()
-
     const coords = []
+
     for (const way of data.elements) {
         if (way.type === 'way' && way.geometry) {
             for (const node of way.geometry) {
@@ -141,20 +140,16 @@ async function fetchStreetNodes(location, radius) {
         }
     }
 
-    if (!Array.isArray(coords[0])) {
-        throw new Error('Fetched street node format is invalid')
-    }
-
     if (coords.length === 0) throw new Error('No street nodes found')
     return coords
 }
 
-// ---------- Fitting Pipeline ----------
+// ---------- Fit Shape to Network ----------
 async function fitShapeToStreets(shapeName, location, rawNodes) {
     if (shapeName !== 'heart')
         throw new Error(`Unsupported shape: ${shapeName}`)
 
-    const shape = generateHeart(200)
+    const shape = generateHeart()
     const initialParams = [0.03, 0, location.lng, location.lat]
     const wrappedNodes = rawNodes.map(([lon, lat]) => ({ lon, lat }))
 
@@ -166,7 +161,7 @@ async function fitShapeToStreets(shapeName, location, rawNodes) {
     const transformed = transformShape(shape, result.x)
     const snapped = snapPointsToNodes(transformed, rawNodes)
 
-    console.log(`[BACKEND] Snapped ${snapped.length} points`)
+    console.log(`[BACKEND] Optimization done. Snapped ${snapped.length} points`)
 
     return {
         type: 'FeatureCollection',
@@ -181,10 +176,10 @@ async function fitShapeToStreets(shapeName, location, rawNodes) {
     }
 }
 
-// ---------- API handler ----------
+// ---------- API Route ----------
 export async function POST(req) {
     try {
-        const { location, shape, radius = 1500 } = await req.json()
+        const { location, shape, radius = 500 } = await req.json()
 
         if (
             !location ||
