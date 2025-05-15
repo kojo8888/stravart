@@ -18,6 +18,20 @@ function generateHeart(numPoints = 80) {
     return result
 }
 
+// ---------- Normalization ----------
+function normalizeShape(shape) {
+    const xs = shape.map(([x]) => x)
+    const ys = shape.map(([, y]) => y)
+    const minX = Math.min(...xs)
+    const maxX = Math.max(...xs)
+    const minY = Math.min(...ys)
+    const maxY = Math.max(...ys)
+    const centerX = (minX + maxX) / 2
+    const centerY = (minY + maxY) / 2
+    const scale = 1 / Math.max(maxX - minX, maxY - minY)
+    return shape.map(([x, y]) => [(x - centerX) * scale, (y - centerY) * scale])
+}
+
 // ---------- Transformation ----------
 function transformShape(shape, [scale, theta, tx, ty]) {
     const cos = Math.cos(theta)
@@ -52,9 +66,10 @@ function nelderMead(f, x0, maxIterations = 100) {
         sigma = 0.5
     const n = x0.length
     let simplex = [x0]
+    const perturb = [0.005, 0.2, 0.01, 0.01] // scale, angle, lng, lat
     for (let i = 0; i < n; i++) {
         const x = x0.slice()
-        x[i] += 0.05
+        x[i] += perturb[i]
         simplex.push(x)
     }
 
@@ -117,7 +132,7 @@ async function fetchStreetNodes(location, radius) {
     const query = `
     [out:json][timeout:25];
     (
-      way["highway"](around:${radius},${location.lat},${location.lng});
+      way["highway"~"primary|secondary|tertiary|residential|cycleway"](around:${radius},${location.lat},${location.lng});
     );
     out geom;
   `
@@ -149,8 +164,10 @@ async function fitShapeToStreets(shapeName, location, rawNodes) {
     if (shapeName !== 'heart')
         throw new Error(`Unsupported shape: ${shapeName}`)
 
-    const shape = generateHeart()
-    const initialParams = [0.03, 0, location.lng, location.lat]
+    const shape = normalizeShape(generateHeart())
+    const degreesPerMeter = 1 / 111000
+    const scale = 1000 * degreesPerMeter // increase size to improve shape visibility
+    const initialParams = [scale, 0, location.lng, location.lat]
     const wrappedNodes = rawNodes.map(([lon, lat]) => ({ lon, lat }))
 
     const result = nelderMead(
@@ -159,6 +176,9 @@ async function fitShapeToStreets(shapeName, location, rawNodes) {
     )
 
     const transformed = transformShape(shape, result.x)
+    console.log('[DEBUG] Transformed shape sample:', transformed.slice(0, 5))
+    console.log('[DEBUG] Raw nodes fetched:', rawNodes.length)
+
     const snapped = snapPointsToNodes(transformed, rawNodes)
 
     console.log(`[BACKEND] Optimization done. Snapped ${snapped.length} points`)
