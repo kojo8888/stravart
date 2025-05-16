@@ -11,6 +11,12 @@ import {
     SelectTrigger,
 } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
+import dynamic from 'next/dynamic'
+
+const DynamicMap = dynamic(
+    () => import('@/components/GeoMap').then((mod) => mod.default),
+    { ssr: false }
+)
 
 interface Coordinates {
     lat: number
@@ -110,7 +116,6 @@ const Home: React.FC = () => {
                 />
                 <link rel="icon" href="/favicon.ico" />
             </Head>
-
             <main className="flex flex-col gap-6">
                 <h1 className="text-3xl font-bold text-center mb-4">
                     Strava Art
@@ -119,7 +124,6 @@ const Home: React.FC = () => {
                     Create your own Strava Art by selecting a location and
                     shape.
                 </p>
-
                 <div className="flex flex-col lg:flex-row gap-6">
                     <div className="flex-1 border rounded-xl p-4 shadow">
                         <h2 className="font-semibold mb-2">Location</h2>
@@ -156,7 +160,6 @@ const Home: React.FC = () => {
                             onChange={handleSizeChange}
                         />
                     </div>
-
                     <div className="flex-1 border rounded-xl p-4 shadow">
                         <h2 className="font-semibold mb-2">
                             Select or Describe Shape
@@ -172,7 +175,6 @@ const Home: React.FC = () => {
                         />
                     </div>
                 </div>
-
                 <div className="flex gap-4">
                     <Button onClick={handleFetch} variant="outline">
                         Run
@@ -185,6 +187,14 @@ const Home: React.FC = () => {
                         Download
                     </Button>
                 </div>
+                {userLocation && (
+                    <div className="h-[500px] w-full border rounded-xl overflow-hidden shadow">
+                        <DynamicMap
+                            center={userLocation}
+                            geojsonData={result}
+                        />
+                    </div>
+                )}
             </main>
         </div>
     )
