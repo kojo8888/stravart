@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
+import DrawingBoard from '@/components/DrawingBoard'
 import dynamic from 'next/dynamic'
 
 const DynamicMap = dynamic(
@@ -24,7 +25,6 @@ interface Coordinates {
     lng: number
 }
 
-//TODO: Add input search box for places
 const cities: Record<string, Coordinates> = {
     Munich: { lat: 48.1351, lng: 11.582 },
     Berlin: { lat: 52.52, lng: 13.405 },
@@ -214,6 +214,16 @@ const Home: React.FC = () => {
                             value={selectedShape}
                             onChange={handleShapeSelect}
                         />
+                        <div className="border rounded-xl p-4 shadow mt-4">
+                            <h2 className="font-semibold mb-2">
+                                Or Draw Your Own Shape
+                            </h2>
+                            <DrawingBoard
+                                onSvgGenerated={(svg) =>
+                                    console.log('Generated SVG', svg)
+                                }
+                            />
+                        </div>
                     </div>
                 </div>
                 <div className="flex gap-4">
