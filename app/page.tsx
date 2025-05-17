@@ -11,6 +11,7 @@ import {
     SelectTrigger,
 } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
+import { Progress } from '@/components/ui/progress'
 import dynamic from 'next/dynamic'
 
 const DynamicMap = dynamic(
@@ -23,6 +24,7 @@ interface Coordinates {
     lng: number
 }
 
+//TODO: Add input search box for places
 const cities: Record<string, Coordinates> = {
     Munich: { lat: 48.1351, lng: 11.582 },
     Berlin: { lat: 52.52, lng: 13.405 },
@@ -34,6 +36,7 @@ const Home: React.FC = () => {
     const [selectedCity, setSelectedCity] = useState<string>('')
     const [selectedShape, setSelectedShape] = useState<string>('')
     const [selectedSize, setSelectedSize] = useState<string>('1500')
+    const [loading, setLoading] = useState(false)
     const [result, setResult] = useState<any | null>(null)
 
     const getUserLocation = () => {
@@ -74,6 +77,7 @@ const Home: React.FC = () => {
             return
         }
 
+        setLoading(true)
         try {
             const response = await axios.post('/api/fit-fetch', {
                 location: userLocation,
@@ -82,9 +86,10 @@ const Home: React.FC = () => {
             })
             console.log('[FRONTEND] Response from backend:', response.data)
             setResult(response.data)
-            alert('Fetch complete. Check console for details.')
         } catch (error) {
             console.error('[FRONTEND] Error fetching data:', error)
+        } finally {
+            setLoading(false)
         }
     }
 
@@ -187,6 +192,13 @@ const Home: React.FC = () => {
                         Download
                     </Button>
                 </div>
+                {loading && (
+                    <Progress
+                        value={75}
+                        className="w-full max-w-xl mx-auto mb-4"
+                    />
+                )}
+
                 {userLocation && (
                     <div className="h-[500px] w-full border rounded-xl overflow-hidden shadow">
                         <DynamicMap
