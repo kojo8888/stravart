@@ -38,6 +38,7 @@ const Home: React.FC = () => {
     const [selectedSize, setSelectedSize] = useState<string>('1500')
     const [loading, setLoading] = useState(false)
     const [result, setResult] = useState<any | null>(null)
+    const [searchQuery, setSearchQuery] = useState('')
 
     const getUserLocation = () => {
         if (navigator.geolocation) {
@@ -52,6 +53,31 @@ const Home: React.FC = () => {
         } else {
             alert('Geolocation is not supported by your browser.')
             console.warn('[FRONTEND] Geolocation not supported.')
+        }
+    }
+
+    const handleSearchPlace = async () => {
+        if (!searchQuery) return
+
+        try {
+            const response = await fetch(
+                `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+                    searchQuery
+                )}`
+            )
+            const data = await response.json()
+            if (data.length > 0) {
+                const loc = {
+                    lat: parseFloat(data[0].lat),
+                    lng: parseFloat(data[0].lon),
+                }
+                setUserLocation(loc)
+                console.log('[NOMINATIM] Found location:', loc)
+            } else {
+                alert('Place not found. Try a more specific name.')
+            }
+        } catch (err) {
+            console.error('Nominatim search error:', err)
         }
     }
 
@@ -135,6 +161,16 @@ const Home: React.FC = () => {
                         <Button onClick={getUserLocation}>
                             Get My Location
                         </Button>
+                        <Input
+                            placeholder="Search for a place"
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            className="mt-2"
+                        />
+                        <Button onClick={handleSearchPlace} className="mt-2">
+                            Search
+                        </Button>
+
                         <p className="mt-2">Or select a city:</p>
                         <Select
                             onValueChange={handleCitySelect}
