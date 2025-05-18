@@ -39,6 +39,7 @@ const Home: React.FC = () => {
     const [loading, setLoading] = useState(false)
     const [result, setResult] = useState<any | null>(null)
     const [searchQuery, setSearchQuery] = useState('')
+    const [customSvg, setCustomSvg] = useState<string | null>(null)
 
     const getUserLocation = () => {
         if (navigator.geolocation) {
@@ -109,6 +110,7 @@ const Home: React.FC = () => {
                 location: userLocation,
                 radius: parseInt(selectedSize) || 1500,
                 shape: selectedShape,
+                svg: customSvg,
             })
             console.log('[FRONTEND] Response from backend:', response.data)
             setResult(response.data)
@@ -219,9 +221,10 @@ const Home: React.FC = () => {
                                 Or Draw Your Own Shape
                             </h2>
                             <DrawingBoard
-                                onSvgGenerated={(svg) =>
+                                onSvgGenerated={(svg) => {
                                     console.log('Generated SVG', svg)
-                                }
+                                    setCustomSvg(svg)
+                                }}
                             />
                         </div>
                     </div>

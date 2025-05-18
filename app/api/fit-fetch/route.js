@@ -2,7 +2,48 @@ import { NextResponse } from 'next/server'
 import RBush from 'rbush'
 import knn from 'rbush-knn'
 
-// ---------- Shape Generator ----------
+// ---------- SVG Handling ----------
+const parseSvgPath = (svgPath) => {
+    const regex = /[ML]\s*(-?\d+\.?\d*)\s*(-?\d+\.?\d*)/g
+    let match
+    const points = []
+
+    while ((match = regex.exec(svgPath)) !== null) {
+        const x = parseFloat(match[1])
+        const y = parseFloat(match[2])
+        points.push({ x, y })
+    }
+
+    return points
+}
+
+const normalizePoints = (points, center, radiusMeters) => {
+    const maxX = Math.max(...points.map((p) => p.x))
+    const maxY = Math.max(...points.map((p) => p.y))
+    const scale = radiusMeters / Math.max(maxX, maxY)
+
+    return points.map((p) => {
+        const latOffset = (p.y * scale) / 111320 // approx meters per lat
+        const lngOffset =
+            (p.x * scale) /
+            ((40075000 * Math.cos((center.lat * Math.PI) / 180)) / 360) // meters per lon
+        return {
+            lat: center.lat + latOffset,
+            lng: center.lng + lngOffset,
+        }
+    })
+}
+
+const convertSvgToLatLngPoints = (svgString, center, radius) => {
+    const pathMatch = svgString.match(/<path[^>]*d="([^"]+)"/)
+    if (!pathMatch) return []
+
+    const pathData = pathMatch[1]
+    const rawPoints = parseSvgPath(pathData)
+    return normalizePoints(rawPoints, center, radius)
+}
+
+// ---------- Heart Shape Generator ----------
 function generateHeart(numPoints = 80) {
     const result = []
     for (let i = 0; i < numPoints; i++) {
@@ -18,7 +59,6 @@ function generateHeart(numPoints = 80) {
     return result
 }
 
-// ---------- Normalization ----------
 function normalizeShape(shape) {
     const xs = shape.map(([x]) => x)
     const ys = shape.map(([, y]) => y)
@@ -32,7 +72,6 @@ function normalizeShape(shape) {
     return shape.map(([x, y]) => [(x - centerX) * scale, (y - centerY) * scale])
 }
 
-// ---------- Transformation ----------
 function transformShape(shape, [scale, theta, tx, ty]) {
     const cos = Math.cos(theta)
     const sin = Math.sin(theta)
@@ -58,7 +97,6 @@ function costFunction(params, shape, coords) {
     return total
 }
 
-// ---------- Nelder-Mead ----------
 function nelderMead(f, x0, maxIterations = 100) {
     const alpha = 1,
         gamma = 2,
@@ -66,7 +104,7 @@ function nelderMead(f, x0, maxIterations = 100) {
         sigma = 0.5
     const n = x0.length
     let simplex = [x0]
-    const perturb = [0.005, 0.2, 0.01, 0.01] // scale, angle, lng, lat
+    const perturb = [0.005, 0.2, 0.01, 0.01]
     for (let i = 0; i < n; i++) {
         const x = x0.slice()
         x[i] += perturb[i]
@@ -107,7 +145,6 @@ function nelderMead(f, x0, maxIterations = 100) {
     return { x: simplex[0], fx: f(simplex[0]) }
 }
 
-// ---------- Snap Points ----------
 function snapPointsToNodes(points, rawNodes) {
     const items = rawNodes.map(([lon, lat]) => ({
         minX: lon,
@@ -127,7 +164,6 @@ function snapPointsToNodes(points, rawNodes) {
     })
 }
 
-// ---------- Fetch Street Nodes ----------
 async function fetchStreetNodes(location, radius) {
     const query = `
     [out:json][timeout:25];
@@ -159,14 +195,13 @@ async function fetchStreetNodes(location, radius) {
     return coords
 }
 
-// ---------- Fit Shape to Network ----------
 async function fitShapeToStreets(shapeName, location, rawNodes) {
     if (shapeName !== 'heart')
         throw new Error(`Unsupported shape: ${shapeName}`)
 
     const shape = normalizeShape(generateHeart())
     const degreesPerMeter = 1 / 111000
-    const scale = 1000 * degreesPerMeter // increase size to improve shape visibility
+    const scale = 1000 * degreesPerMeter
     const initialParams = [scale, 0, location.lng, location.lat]
     const wrappedNodes = rawNodes.map(([lon, lat]) => ({ lon, lat }))
 
@@ -176,12 +211,7 @@ async function fitShapeToStreets(shapeName, location, rawNodes) {
     )
 
     const transformed = transformShape(shape, result.x)
-    console.log('[DEBUG] Transformed shape sample:', transformed.slice(0, 5))
-    console.log('[DEBUG] Raw nodes fetched:', rawNodes.length)
-
     const snapped = snapPointsToNodes(transformed, rawNodes)
-
-    console.log(`[BACKEND] Optimization done. Snapped ${snapped.length} points`)
 
     return {
         type: 'FeatureCollection',
@@ -199,7 +229,7 @@ async function fitShapeToStreets(shapeName, location, rawNodes) {
 // ---------- API Route ----------
 export async function POST(req) {
     try {
-        const { location, shape, radius = 500 } = await req.json()
+        const { location, shape, radius = 500, svg } = await req.json()
 
         if (
             !location ||
@@ -211,10 +241,16 @@ export async function POST(req) {
 
         const nodes = await fetchStreetNodes(location, radius)
 
-        if (!shape || shape.trim() === '') {
+        if (svg && shape?.toLowerCase() === 'custom') {
+            const coords = convertSvgToLatLngPoints(svg, location, radius)
+            const snapped = snapPointsToNodes(
+                coords.map((p) => [p.lng, p.lat]),
+                nodes
+            )
+
             return NextResponse.json({
                 type: 'FeatureCollection',
-                features: nodes.map(([lon, lat]) => ({
+                features: snapped.map(([lon, lat]) => ({
                     type: 'Feature',
                     geometry: {
                         type: 'Point',
