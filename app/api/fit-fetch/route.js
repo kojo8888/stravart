@@ -2,7 +2,32 @@ import { NextResponse } from 'next/server'
 import RBush from 'rbush'
 import knn from 'rbush-knn'
 
-// ---------- SVG Handling ----------
+// --- SVG Handling ---
+const parseSvgPathsAndPolylines = (svgString) => {
+    const pathRegex = /<path[^>]*d="([^"]+)"[^>]*>/g
+    const polylineRegex = /<polyline[^>]*points="([^"]+)"[^>]*>/g
+
+    const allPoints = []
+
+    let match
+    while ((match = pathRegex.exec(svgString)) !== null) {
+        const d = match[1]
+        const points = parseSvgPath(d)
+        allPoints.push(...points)
+    }
+
+    while ((match = polylineRegex.exec(svgString)) !== null) {
+        const pointsStr = match[1].trim()
+        const points = pointsStr.split(/\s+/).map((pair) => {
+            const [x, y] = pair.split(',').map(Number)
+            return { x, y }
+        })
+        allPoints.push(...points)
+    }
+
+    return allPoints
+}
+
 const parseSvgPath = (svgPath) => {
     const regex = /[ML]\s*(-?\d+\.?\d*)\s*(-?\d+\.?\d*)/g
     let match
@@ -23,27 +48,128 @@ const normalizePoints = (points, center, radiusMeters) => {
     const scale = radiusMeters / Math.max(maxX, maxY)
 
     return points.map((p) => {
-        const latOffset = (p.y * scale) / 111320 // approx meters per lat
+        const latOffset = (p.y * scale) / 111320
         const lngOffset =
             (p.x * scale) /
-            ((40075000 * Math.cos((center.lat * Math.PI) / 180)) / 360) // meters per lon
-        return {
-            lat: center.lat + latOffset,
-            lng: center.lng + lngOffset,
-        }
+            ((40075000 * Math.cos((center.lat * Math.PI) / 180)) / 360)
+        return { lat: center.lat + latOffset, lng: center.lng + lngOffset }
     })
 }
 
-const convertSvgToLatLngPoints = (svgString, center, radius) => {
-    const pathMatch = svgString.match(/<path[^>]*d="([^"]+)"/)
-    if (!pathMatch) return []
+const simplifyRDP = (points, epsilon = 0.0002) => {
+    if (points.length < 3) return points
 
-    const pathData = pathMatch[1]
-    const rawPoints = parseSvgPath(pathData)
-    return normalizePoints(rawPoints, center, radius)
+    const getSqDist = (p1, p2) =>
+        (p1.lat - p2.lat) ** 2 + (p1.lng - p2.lng) ** 2
+
+    const getSqSegDist = (p, p1, p2) => {
+        let x = p1.lng,
+            y = p1.lat
+        let dx = p2.lng - x,
+            dy = p2.lat - y
+
+        if (dx !== 0 || dy !== 0) {
+            const t =
+                ((p.lng - x) * dx + (p.lat - y) * dy) / (dx * dx + dy * dy)
+            if (t > 1) {
+                x = p2.lng
+                y = p2.lat
+            } else if (t > 0) {
+                x += dx * t
+                y += dy * t
+            }
+        }
+
+        dx = p.lng - x
+        dy = p.lat - y
+        return dx * dx + dy * dy
+    }
+
+    const simplifyStep = (pts, first, last, eps, simplified) => {
+        let maxDist = 0
+        let index = first
+
+        for (let i = first + 1; i < last; i++) {
+            const dist = getSqSegDist(pts[i], pts[first], pts[last])
+            if (dist > maxDist) {
+                index = i
+                maxDist = dist
+            }
+        }
+
+        if (maxDist > eps * eps) {
+            if (index - first > 1)
+                simplifyStep(pts, first, index, eps, simplified)
+            simplified.push(pts[index])
+            if (last - index > 1)
+                simplifyStep(pts, index, last, eps, simplified)
+        }
+    }
+
+    const simplified = [points[0]]
+    simplifyStep(points, 0, points.length - 1, epsilon, simplified)
+    simplified.push(points[points.length - 1])
+    return simplified
 }
 
-// ---------- Heart Shape Generator ----------
+const convertSvgToLatLngPoints = (svgString, center, radius) => {
+    const allPoints = parseSvgPathsAndPolylines(svgString)
+    if (allPoints.length === 0) return []
+    return normalizePoints(allPoints, center, radius)
+}
+
+// --- Overpass + Fitting ---
+async function fetchStreetNodes(location, radius) {
+    const query = `
+    [out:json][timeout:25];
+    (
+      way["highway"~"primary|secondary|tertiary|residential|cycleway"](around:${radius},${location.lat},${location.lng});
+    );
+    out geom;
+  `
+
+    const res = await fetch('https://overpass-api.de/api/interpreter', {
+        method: 'POST',
+        body: query,
+    })
+
+    if (!res.ok) throw new Error('Overpass API fetch failed')
+
+    const data = await res.json()
+    const coords = []
+
+    for (const way of data.elements) {
+        if (way.type === 'way' && way.geometry) {
+            for (const node of way.geometry) {
+                coords.push([node.lon, node.lat])
+            }
+        }
+    }
+
+    if (coords.length === 0) throw new Error('No street nodes found')
+    return coords
+}
+
+function snapPointsToNodes(points, rawNodes) {
+    const items = rawNodes.map(([lon, lat]) => ({
+        minX: lon,
+        minY: lat,
+        maxX: lon,
+        maxY: lat,
+        lon,
+        lat,
+    }))
+
+    const index = new RBush()
+    index.load(items)
+
+    return points.map(([lon, lat]) => {
+        const [nearest] = knn(index, lon, lat, 1)
+        return [nearest.lon, nearest.lat]
+    })
+}
+
+// --- Heart Shape Optimization ---
 function generateHeart(numPoints = 80) {
     const result = []
     for (let i = 0; i < numPoints; i++) {
@@ -86,7 +212,7 @@ function costFunction(params, shape, coords) {
     let total = 0
     for (const [x, y] of transformed) {
         let min = Infinity
-        for (const { lon, lat } of coords) {
+        for (const [lon, lat] of coords) {
             const dx = x - lon
             const dy = y - lat
             const dist = dx * dx + dy * dy
@@ -145,56 +271,6 @@ function nelderMead(f, x0, maxIterations = 100) {
     return { x: simplex[0], fx: f(simplex[0]) }
 }
 
-function snapPointsToNodes(points, rawNodes) {
-    const items = rawNodes.map(([lon, lat]) => ({
-        minX: lon,
-        minY: lat,
-        maxX: lon,
-        maxY: lat,
-        lon,
-        lat,
-    }))
-
-    const index = new RBush()
-    index.load(items)
-
-    return points.map(([lon, lat]) => {
-        const [nearest] = knn(index, lon, lat, 1)
-        return [nearest.lon, nearest.lat]
-    })
-}
-
-async function fetchStreetNodes(location, radius) {
-    const query = `
-    [out:json][timeout:25];
-    (
-      way["highway"~"primary|secondary|tertiary|residential|cycleway"](around:${radius},${location.lat},${location.lng});
-    );
-    out geom;
-  `
-
-    const res = await fetch('https://overpass-api.de/api/interpreter', {
-        method: 'POST',
-        body: query,
-    })
-
-    if (!res.ok) throw new Error('Overpass API fetch failed')
-
-    const data = await res.json()
-    const coords = []
-
-    for (const way of data.elements) {
-        if (way.type === 'way' && way.geometry) {
-            for (const node of way.geometry) {
-                coords.push([node.lon, node.lat])
-            }
-        }
-    }
-
-    if (coords.length === 0) throw new Error('No street nodes found')
-    return coords
-}
-
 async function fitShapeToStreets(shapeName, location, rawNodes) {
     if (shapeName !== 'heart')
         throw new Error(`Unsupported shape: ${shapeName}`)
@@ -203,10 +279,9 @@ async function fitShapeToStreets(shapeName, location, rawNodes) {
     const degreesPerMeter = 1 / 111000
     const scale = 1000 * degreesPerMeter
     const initialParams = [scale, 0, location.lng, location.lat]
-    const wrappedNodes = rawNodes.map(([lon, lat]) => ({ lon, lat }))
 
     const result = nelderMead(
-        (params) => costFunction(params, shape, wrappedNodes),
+        (params) => costFunction(params, shape, rawNodes),
         initialParams
     )
 
@@ -226,7 +301,7 @@ async function fitShapeToStreets(shapeName, location, rawNodes) {
     }
 }
 
-// ---------- API Route ----------
+// --- API Endpoint ---
 export async function POST(req) {
     try {
         const { location, shape, radius = 500, svg } = await req.json()
@@ -243,8 +318,9 @@ export async function POST(req) {
 
         if (svg && shape?.toLowerCase() === 'custom') {
             const coords = convertSvgToLatLngPoints(svg, location, radius)
+            const simplified = simplifyRDP(coords, 0.0002)
             const snapped = snapPointsToNodes(
-                coords.map((p) => [p.lng, p.lat]),
+                simplified.map((p) => [p.lng, p.lat]),
                 nodes
             )
 
