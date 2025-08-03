@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
 import DrawingBoard from '@/components/DrawingBoard'
+import { getAvailableShapes } from '@/lib/shapes'
 import dynamic from 'next/dynamic'
 
 const DynamicMap = dynamic(
@@ -22,6 +23,7 @@ interface Coordinates {
 
 const Home: React.FC = () => {
     const [userLocation, setUserLocation] = useState<Coordinates | null>(null)
+    const [shapeType, setShapeType] = useState<'predefined' | 'custom'>('predefined')
     const [selectedShape, setSelectedShape] = useState<string>('heart')
     const [targetDistance, setTargetDistance] = useState<string>('5.0')
     const [loading, setLoading] = useState(false)
@@ -88,8 +90,11 @@ const Home: React.FC = () => {
     }
 
 
-    const handleShapeSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-        setSelectedShape(e.target.value)
+    const handleShapeTypeChange = (type: 'predefined' | 'custom') => {
+        setShapeType(type)
+        if (type === 'predefined') {
+            setCustomSvg(null) // Clear custom drawing when switching to predefined
+        }
     }
 
     const handleDistanceChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -102,12 +107,17 @@ const Home: React.FC = () => {
             return
         }
 
+        if (shapeType === 'custom' && !customSvg) {
+            alert('Please draw a custom shape or switch to heart shape.')
+            return
+        }
+
         setLoading(true)
         try {
             const response = await axios.post('/api/fit-fetch', {
                 location: userLocation,
                 targetDistanceKm: parseFloat(targetDistance) || 5.0,
-                shape: selectedShape,
+                shape: shapeType === 'predefined' ? selectedShape : 'custom',
                 svg: customSvg,
             })
             console.log('[FRONTEND] Response from backend:', response.data)
@@ -227,26 +237,71 @@ const Home: React.FC = () => {
                             <h2 className="text-xl font-semibold">Choose Shape</h2>
                         </div>
                         
+                        {/* Shape Type Selection */}
                         <div className="space-y-4">
-                            <div>
-                                <p className="text-gray-600 mb-2">Describe a shape:</p>
-                                <Input
-                                    placeholder="e.g. heart, star, circle..."
-                                    value={selectedShape}
-                                    onChange={handleShapeSelect}
-                                    className="text-lg"
-                                />
+                            <div className="flex gap-4">
+                                <Button
+                                    onClick={() => handleShapeTypeChange('predefined')}
+                                    variant={shapeType === 'predefined' ? 'default' : 'outline'}
+                                    className="flex-1"
+                                >
+                                    🎯 Choose Shape
+                                </Button>
+                                <Button
+                                    onClick={() => handleShapeTypeChange('custom')}
+                                    variant={shapeType === 'custom' ? 'default' : 'outline'}
+                                    className="flex-1"
+                                >
+                                    ✏️ Draw Custom
+                                </Button>
                             </div>
                             
-                            <div className="border-t pt-4">
-                                <p className="text-gray-600 mb-3">Or draw your own:</p>
-                                <DrawingBoard
-                                    onSvgGenerated={(svg) => {
-                                        console.log('Generated SVG', svg)
-                                        setCustomSvg(svg)
-                                    }}
-                                />
-                            </div>
+                            {/* Predefined Shapes */}
+                            {shapeType === 'predefined' && (
+                                <div className="space-y-3">
+                                    <p className="text-gray-600">Select a shape:</p>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        {getAvailableShapes().map((shape) => (
+                                            <Button
+                                                key={shape.name}
+                                                onClick={() => setSelectedShape(shape.name)}
+                                                variant={selectedShape === shape.name ? 'default' : 'outline'}
+                                                className="h-auto p-3 flex flex-col gap-1"
+                                            >
+                                                <span className="text-lg">{shape.displayName}</span>
+                                                <span className="text-xs text-gray-600 text-center">
+                                                    {shape.description}
+                                                </span>
+                                            </Button>
+                                        ))}
+                                    </div>
+                                    <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                                        <p className="text-blue-800 text-sm text-center">
+                                            {getAvailableShapes().find(s => s.name === selectedShape)?.displayName} selected
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+                            
+                            {/* Custom Drawing */}
+                            {shapeType === 'custom' && (
+                                <div className="space-y-3">
+                                    <p className="text-gray-600">Draw your custom shape:</p>
+                                    <DrawingBoard
+                                        onSvgGenerated={(svg) => {
+                                            console.log('Generated SVG', svg)
+                                            setCustomSvg(svg)
+                                        }}
+                                    />
+                                    {customSvg && (
+                                        <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+                                            <p className="text-green-700 text-sm">
+                                                ✓ Custom shape ready! Your drawing will be used for the route.
+                                            </p>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
                         </div>
                     </div>
 
@@ -256,7 +311,7 @@ const Home: React.FC = () => {
                             onClick={handleFetch} 
                             size="lg"
                             className="px-8"
-                            disabled={!userLocation}
+                            disabled={!userLocation || (shapeType === 'custom' && !customSvg)}
                         >
                             🚀 Generate Route
                         </Button>

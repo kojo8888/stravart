@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import RBush from 'rbush'
 import knn from 'rbush-knn'
 import distance from '@turf/distance'
+import { generateShapePoints, normalizeShape, getShape } from '@/lib/shapes'
 
 // --- SVG Handling ---
 const parseSvgPathsAndPolylines = (svgString) => {
@@ -192,34 +193,7 @@ function calculateRouteDistance(coordinates) {
     return Math.round(totalDistance * 100) / 100 // Round to 2 decimal places
 }
 
-// --- Heart Shape Optimization ---
-function generateHeart(numPoints = 80) {
-    const result = []
-    for (let i = 0; i < numPoints; i++) {
-        const t = (2 * Math.PI * i) / numPoints
-        const x = 16 * Math.pow(Math.sin(t), 3)
-        const y =
-            13 * Math.cos(t) -
-            5 * Math.cos(2 * t) -
-            2 * Math.cos(3 * t) -
-            Math.cos(4 * t)
-        result.push([x, y])
-    }
-    return result
-}
-
-function normalizeShape(shape) {
-    const xs = shape.map(([x]) => x)
-    const ys = shape.map(([, y]) => y)
-    const minX = Math.min(...xs)
-    const maxX = Math.max(...xs)
-    const minY = Math.min(...ys)
-    const maxY = Math.max(...ys)
-    const centerX = (minX + maxX) / 2
-    const centerY = (minY + maxY) / 2
-    const scale = 1 / Math.max(maxX - minX, maxY - minY)
-    return shape.map(([x, y]) => [(x - centerX) * scale, (y - centerY) * scale])
-}
+// --- Shape Optimization ---
 
 function transformShape(shape, [scale, theta, tx, ty]) {
     const cos = Math.cos(theta)
@@ -307,14 +281,18 @@ function nelderMead(f, x0, maxIterations = 100) {
 }
 
 async function fitShapeToStreets(shapeName, location, rawNodes, targetDistanceKm = 5.0) {
-    if (shapeName !== 'heart')
+    const shapeDefinition = getShape(shapeName)
+    if (!shapeDefinition) {
         throw new Error(`Unsupported shape: ${shapeName}`)
+    }
 
-    const shape = normalizeShape(generateHeart())
+    const shapePoints = generateShapePoints(shapeName)
+    const shape = normalizeShape(shapePoints)
     const degreesPerMeter = 1 / 111000
-    // Estimate initial scale based on target distance
-    // Heart perimeter is roughly 5.5 times its width, so scale = targetKm / 5.5
-    const estimatedScale = (targetDistanceKm * 1000 / 5.5) * degreesPerMeter
+    
+    // Use shape-specific perimeter ratio for better scaling estimation
+    const perimeterRatio = shapeDefinition.estimatedPerimeterRatio || 6.0
+    const estimatedScale = (targetDistanceKm * 1000 / perimeterRatio) * degreesPerMeter
     const initialParams = [estimatedScale, 0, location.lng, location.lat]
 
     let result = nelderMead(
