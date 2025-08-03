@@ -4,12 +4,6 @@ import React, { useState } from 'react'
 import Head from 'next/head'
 import axios from 'axios'
 import { Button } from '@/components/ui/button'
-import {
-    Select,
-    SelectContent,
-    SelectItem,
-    SelectTrigger,
-} from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
 import DrawingBoard from '@/components/DrawingBoard'
@@ -25,20 +19,9 @@ interface Coordinates {
     lng: number
 }
 
-const cities: Record<string, Coordinates> = {
-    Munich: { lat: 48.1351, lng: 11.582 },
-    Berlin: { lat: 52.52, lng: 13.405 },
-    Hamburg: { lat: 53.5511, lng: 9.9937 },
-    Paris: { lat: 48.8566, lng: 2.3522 },
-    London: { lat: 51.5074, lng: -0.1278 },
-    'New York': { lat: 40.7128, lng: -74.0060 },
-    Amsterdam: { lat: 52.3676, lng: 4.9041 },
-    Vienna: { lat: 48.2082, lng: 16.3738 },
-}
 
 const Home: React.FC = () => {
     const [userLocation, setUserLocation] = useState<Coordinates | null>(null)
-    const [selectedCity, setSelectedCity] = useState<string>('')
     const [selectedShape, setSelectedShape] = useState<string>('heart')
     const [targetDistance, setTargetDistance] = useState<string>('5.0')
     const [loading, setLoading] = useState(false)
@@ -57,7 +40,6 @@ const Home: React.FC = () => {
                     }
                     console.log('[FRONTEND] User location acquired:', loc)
                     setUserLocation(loc)
-                    setSelectedCity('') // Clear city selection when using geolocation
                 },
                 (error) => {
                     console.error('Geolocation error:', error)
@@ -87,7 +69,6 @@ const Home: React.FC = () => {
                     lng: parseFloat(data[0].lon),
                 }
                 setUserLocation(loc)
-                setSelectedCity('') // Clear city selection when using search
                 console.log('[NOMINATIM] Found location:', loc, data[0].display_name)
             } else {
                 alert('Place not found. Try a more specific name (e.g., "Central Park, New York" or "Eiffel Tower, Paris").')
@@ -106,14 +87,6 @@ const Home: React.FC = () => {
         }
     }
 
-    const handleCitySelect = (city: string) => {
-        setSelectedCity(city)
-        if (cities[city]) {
-            console.log('[FRONTEND] City selected:', city)
-            setUserLocation(cities[city])
-            setSearchQuery('') // Clear search when using city selection
-        }
-    }
 
     const handleShapeSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
         setSelectedShape(e.target.value)
@@ -182,25 +155,30 @@ const Home: React.FC = () => {
                     Create your own Strava Art by selecting a location and
                     shape.
                 </p>
-                <div className="flex flex-col lg:flex-row gap-6">
-                    <div className="flex-1 border rounded-xl p-4 shadow">
-                        <h2 className="font-semibold mb-2">Location</h2>
+                <div className="max-w-2xl mx-auto space-y-6">
+                    {/* Step 1: Location */}
+                    <div className="border rounded-xl p-6 shadow-sm bg-white">
+                        <div className="flex items-center gap-2 mb-4">
+                            <span className="w-8 h-8 bg-blue-500 text-white rounded-full flex items-center justify-center text-sm font-bold">1</span>
+                            <h2 className="text-xl font-semibold">Choose Location</h2>
+                        </div>
                         
                         {/* Geolocation Button */}
-                        <Button onClick={getUserLocation} className="mb-3">
-                            📍 Get My Location
+                        <Button onClick={getUserLocation} variant="outline" className="mb-4 w-full">
+                            📍 Use My Current Location
                         </Button>
                         
                         {/* Place Search */}
-                        <div className="mb-3">
-                            <p className="text-sm text-gray-600 mb-2">Search for any place:</p>
+                        <div className="space-y-2">
+                            <p className="text-gray-600">Or search for any place:</p>
                             <div className="flex gap-2">
                                 <Input
                                     placeholder="e.g. Central Park NYC, Eiffel Tower Paris..."
                                     value={searchQuery}
                                     onChange={(e) => setSearchQuery(e.target.value)}
-                                    onKeyPress={handleSearchKeyPress}
+                                    onKeyDown={handleSearchKeyPress}
                                     disabled={isSearching}
+                                    className="flex-1"
                                 />
                                 <Button 
                                     onClick={handleSearchPlace} 
@@ -212,128 +190,119 @@ const Home: React.FC = () => {
                             </div>
                         </div>
 
-                        {/* City Selection */}
-                        <div className="mb-3">
-                            <p className="text-sm text-gray-600 mb-2">Or select a popular city:</p>
-                            <Select
-                                onValueChange={handleCitySelect}
-                                value={selectedCity}
-                            >
-                                <SelectTrigger>
-                                    {selectedCity || 'Select a city'}
-                                </SelectTrigger>
-                                <SelectContent>
-                                    {Object.keys(cities).map((city) => (
-                                        <SelectItem key={city} value={city}>
-                                            {city}
-                                        </SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
-                        </div>
-
                         {/* Current Location Display */}
                         {userLocation && (
-                            <div className="mb-3 p-2 bg-green-50 border border-green-200 rounded">
-                                <p className="text-sm text-green-700">
-                                    📍 Current location: {userLocation.lat.toFixed(4)}, {userLocation.lng.toFixed(4)}
+                            <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg">
+                                <p className="text-green-700 font-medium">
+                                    ✓ Location set: {userLocation.lat.toFixed(4)}, {userLocation.lng.toFixed(4)}
                                 </p>
                             </div>
                         )}
-                        
-                        {/* Route Distance Input */}
-                        <div>
-                            <p className="text-sm font-medium mb-2">Desired route distance (km):</p>
-                            <Input
-                                placeholder="e.g. 5.0"
-                                value={targetDistance}
-                                onChange={handleDistanceChange}
-                                type="number"
-                                step="0.1"
-                                min="1.0"
-                                max="20.0"
-                            />
-                        </div>
                     </div>
-                    <div className="flex-1 border rounded-xl p-4 shadow">
-                        <h2 className="font-semibold mb-2">
-                            Select or Describe Shape
-                        </h2>
-                        <p className="text-sm text-gray-600 mb-2">
-                            Testing shape: {selectedShape}
-                        </p>
+
+                    {/* Step 2: Length */}
+                    <div className="border rounded-xl p-6 shadow-sm bg-white">
+                        <div className="flex items-center gap-2 mb-4">
+                            <span className="w-8 h-8 bg-blue-500 text-white rounded-full flex items-center justify-center text-sm font-bold">2</span>
+                            <h2 className="text-xl font-semibold">Set Route Distance</h2>
+                        </div>
+                        <p className="text-gray-600 mb-3">How long should your route be?</p>
                         <Input
-                            placeholder="e.g. heart, boat, cat..."
-                            className="mt-2"
-                            value={selectedShape}
-                            onChange={handleShapeSelect}
+                            placeholder="e.g. 5.0"
+                            value={targetDistance}
+                            onChange={handleDistanceChange}
+                            type="number"
+                            step="0.1"
+                            min="1.0"
+                            max="20.0"
+                            className="text-lg"
                         />
-                        <div className="border rounded-xl p-4 shadow mt-4">
-                            <h2 className="font-semibold mb-2">
-                                Or Draw Your Own Shape
-                            </h2>
-                            <DrawingBoard
-                                onSvgGenerated={(svg) => {
-                                    console.log('Generated SVG', svg)
-                                    setCustomSvg(svg)
-                                }}
-                            />
+                        <p className="text-sm text-gray-500 mt-2">Distance in kilometers (1.0 - 20.0)</p>
+                    </div>
+
+                    {/* Step 3: Shape */}
+                    <div className="border rounded-xl p-6 shadow-sm bg-white">
+                        <div className="flex items-center gap-2 mb-4">
+                            <span className="w-8 h-8 bg-blue-500 text-white rounded-full flex items-center justify-center text-sm font-bold">3</span>
+                            <h2 className="text-xl font-semibold">Choose Shape</h2>
+                        </div>
+                        
+                        <div className="space-y-4">
+                            <div>
+                                <p className="text-gray-600 mb-2">Describe a shape:</p>
+                                <Input
+                                    placeholder="e.g. heart, star, circle..."
+                                    value={selectedShape}
+                                    onChange={handleShapeSelect}
+                                    className="text-lg"
+                                />
+                            </div>
+                            
+                            <div className="border-t pt-4">
+                                <p className="text-gray-600 mb-3">Or draw your own:</p>
+                                <DrawingBoard
+                                    onSvgGenerated={(svg) => {
+                                        console.log('Generated SVG', svg)
+                                        setCustomSvg(svg)
+                                    }}
+                                />
+                            </div>
                         </div>
                     </div>
-                </div>
-                <div className="flex gap-4">
-                    <Button onClick={handleFetch} variant="outline">
-                        Run
-                    </Button>
-                    <Button
-                        onClick={handleDownload}
-                        variant="outline"
-                        disabled={!result}
-                    >
-                        Download
-                    </Button>
+
+                    {/* Action Buttons */}
+                    <div className="flex gap-4 justify-center">
+                        <Button 
+                            onClick={handleFetch} 
+                            size="lg"
+                            className="px-8"
+                            disabled={!userLocation}
+                        >
+                            🚀 Generate Route
+                        </Button>
+                        <Button
+                            onClick={handleDownload}
+                            variant="outline"
+                            size="lg"
+                            disabled={!result}
+                            className="px-8"
+                        >
+                            📥 Download
+                        </Button>
+                    </div>
                 </div>
                 {loading && (
-                    <Progress
-                        value={75}
-                        className="w-full max-w-xl mx-auto mb-4"
-                    />
-                )}
-
-                {result && result.properties && (
-                    (() => {
-                        const target = result.properties.targetDistanceKm
-                        const actual = result.properties.totalDistanceKm
-                        const error = Math.abs(actual - target) / target
-                        const isWithinTolerance = error <= 0.2
-                        const errorPercent = Math.round(error * 100)
-                        
-                        return (
-                            <div className={`text-center mb-4 p-4 rounded-xl ${isWithinTolerance ? 'bg-green-50 border border-green-200' : 'bg-orange-50 border border-orange-200'}`}>
-                                <h3 className="font-semibold text-lg mb-2">Route Statistics</h3>
-                                <p className="text-gray-700">
-                                    <strong>Target Distance:</strong> {target} km
-                                </p>
-                                <p className="text-gray-700">
-                                    <strong>Actual Distance:</strong> {actual} km
-                                </p>
-                                <p className={`font-medium ${isWithinTolerance ? 'text-green-700' : 'text-orange-700'}`}>
-                                    <strong>Accuracy:</strong> {errorPercent}% difference {isWithinTolerance ? '✓' : '⚠️'}
-                                </p>
-                                <p className="text-gray-700">
-                                    <strong>Points:</strong> {result.properties.pointCount}
-                                </p>
-                            </div>
-                        )
-                    })()
-                )}
-
-                {userLocation && (
-                    <div className="h-[500px] w-full border rounded-xl overflow-hidden shadow">
-                        <DynamicMap
-                            center={userLocation}
-                            geojsonData={result}
+                    <div className="mt-8">
+                        <Progress
+                            value={75}
+                            className="w-full max-w-xl mx-auto mb-4"
                         />
+                        <p className="text-center text-gray-600">Generating your route...</p>
+                    </div>
+                )}
+
+                {userLocation && result && (
+                    <div className="mt-8 space-y-6">
+                        {/* Map */}
+                        <div className="max-w-4xl mx-auto">
+                            <div className="h-[500px] w-full border rounded-xl overflow-hidden shadow-lg">
+                                <DynamicMap
+                                    center={userLocation}
+                                    geojsonData={result}
+                                />
+                            </div>
+                        </div>
+
+                        {/* Route Distance */}
+                        {result.properties && (
+                            <div className="text-center">
+                                <div className="inline-block p-4 bg-white border rounded-xl">
+                                    <p className="text-black font-semibold text-lg">
+                                        🎯 Route Distance: <strong>{result.properties.totalDistanceKm} km</strong>
+                                    </p>
+                                </div>
+                            </div>
+                        )}
                     </div>
                 )}
             </main>
