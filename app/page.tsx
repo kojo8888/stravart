@@ -27,28 +27,43 @@ interface Coordinates {
 
 const cities: Record<string, Coordinates> = {
     Munich: { lat: 48.1351, lng: 11.582 },
+    Berlin: { lat: 52.52, lng: 13.405 },
+    Hamburg: { lat: 53.5511, lng: 9.9937 },
+    Paris: { lat: 48.8566, lng: 2.3522 },
+    London: { lat: 51.5074, lng: -0.1278 },
+    'New York': { lat: 40.7128, lng: -74.0060 },
+    Amsterdam: { lat: 52.3676, lng: 4.9041 },
+    Vienna: { lat: 48.2082, lng: 16.3738 },
 }
 
 const Home: React.FC = () => {
-    const [userLocation, setUserLocation] = useState<Coordinates | null>(cities.Munich)
-    const [selectedCity, setSelectedCity] = useState<string>('Munich')
+    const [userLocation, setUserLocation] = useState<Coordinates | null>(null)
+    const [selectedCity, setSelectedCity] = useState<string>('')
     const [selectedShape, setSelectedShape] = useState<string>('heart')
     const [targetDistance, setTargetDistance] = useState<string>('5.0')
     const [loading, setLoading] = useState(false)
     const [result, setResult] = useState<any | null>(null)
     const [searchQuery, setSearchQuery] = useState('')
+    const [isSearching, setIsSearching] = useState(false)
     const [customSvg, setCustomSvg] = useState<string | null>(null)
 
     const getUserLocation = () => {
         if (navigator.geolocation) {
-            navigator.geolocation.getCurrentPosition((position) => {
-                const loc = {
-                    lat: position.coords.latitude,
-                    lng: position.coords.longitude,
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    const loc = {
+                        lat: position.coords.latitude,
+                        lng: position.coords.longitude,
+                    }
+                    console.log('[FRONTEND] User location acquired:', loc)
+                    setUserLocation(loc)
+                    setSelectedCity('') // Clear city selection when using geolocation
+                },
+                (error) => {
+                    console.error('Geolocation error:', error)
+                    alert('Could not get your location. Please search for a place instead.')
                 }
-                console.log('[FRONTEND] User location acquired:', loc)
-                setUserLocation(loc)
-            })
+            )
         } else {
             alert('Geolocation is not supported by your browser.')
             console.warn('[FRONTEND] Geolocation not supported.')
@@ -56,13 +71,14 @@ const Home: React.FC = () => {
     }
 
     const handleSearchPlace = async () => {
-        if (!searchQuery) return
+        if (!searchQuery.trim()) return
 
+        setIsSearching(true)
         try {
             const response = await fetch(
                 `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
                     searchQuery
-                )}`
+                )}&limit=1&addressdetails=1`
             )
             const data = await response.json()
             if (data.length > 0) {
@@ -71,12 +87,22 @@ const Home: React.FC = () => {
                     lng: parseFloat(data[0].lon),
                 }
                 setUserLocation(loc)
-                console.log('[NOMINATIM] Found location:', loc)
+                setSelectedCity('') // Clear city selection when using search
+                console.log('[NOMINATIM] Found location:', loc, data[0].display_name)
             } else {
-                alert('Place not found. Try a more specific name.')
+                alert('Place not found. Try a more specific name (e.g., "Central Park, New York" or "Eiffel Tower, Paris").')
             }
         } catch (err) {
             console.error('Nominatim search error:', err)
+            alert('Search failed. Please check your internet connection.')
+        } finally {
+            setIsSearching(false)
+        }
+    }
+
+    const handleSearchKeyPress = (e: React.KeyboardEvent) => {
+        if (e.key === 'Enter') {
+            handleSearchPlace()
         }
     }
 
@@ -85,6 +111,7 @@ const Home: React.FC = () => {
         if (cities[city]) {
             console.log('[FRONTEND] City selected:', city)
             setUserLocation(cities[city])
+            setSearchQuery('') // Clear search when using city selection
         }
     }
 
@@ -158,20 +185,75 @@ const Home: React.FC = () => {
                 <div className="flex flex-col lg:flex-row gap-6">
                     <div className="flex-1 border rounded-xl p-4 shadow">
                         <h2 className="font-semibold mb-2">Location</h2>
-                        <p className="text-sm text-gray-600 mb-2">
-                            Testing location: Munich ({userLocation?.lat.toFixed(4)}, {userLocation?.lng.toFixed(4)})
-                        </p>
-                        <p className="mt-2">Desired route distance (km):</p>
-                        <Input
-                            placeholder="e.g. 5.0"
-                            className="mt-2"
-                            value={targetDistance}
-                            onChange={handleDistanceChange}
-                            type="number"
-                            step="0.1"
-                            min="1.0"
-                            max="20.0"
-                        />
+                        
+                        {/* Geolocation Button */}
+                        <Button onClick={getUserLocation} className="mb-3">
+                            📍 Get My Location
+                        </Button>
+                        
+                        {/* Place Search */}
+                        <div className="mb-3">
+                            <p className="text-sm text-gray-600 mb-2">Search for any place:</p>
+                            <div className="flex gap-2">
+                                <Input
+                                    placeholder="e.g. Central Park NYC, Eiffel Tower Paris..."
+                                    value={searchQuery}
+                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                    onKeyPress={handleSearchKeyPress}
+                                    disabled={isSearching}
+                                />
+                                <Button 
+                                    onClick={handleSearchPlace} 
+                                    disabled={isSearching || !searchQuery.trim()}
+                                    variant="outline"
+                                >
+                                    {isSearching ? '🔍' : 'Search'}
+                                </Button>
+                            </div>
+                        </div>
+
+                        {/* City Selection */}
+                        <div className="mb-3">
+                            <p className="text-sm text-gray-600 mb-2">Or select a popular city:</p>
+                            <Select
+                                onValueChange={handleCitySelect}
+                                value={selectedCity}
+                            >
+                                <SelectTrigger>
+                                    {selectedCity || 'Select a city'}
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {Object.keys(cities).map((city) => (
+                                        <SelectItem key={city} value={city}>
+                                            {city}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
+
+                        {/* Current Location Display */}
+                        {userLocation && (
+                            <div className="mb-3 p-2 bg-green-50 border border-green-200 rounded">
+                                <p className="text-sm text-green-700">
+                                    📍 Current location: {userLocation.lat.toFixed(4)}, {userLocation.lng.toFixed(4)}
+                                </p>
+                            </div>
+                        )}
+                        
+                        {/* Route Distance Input */}
+                        <div>
+                            <p className="text-sm font-medium mb-2">Desired route distance (km):</p>
+                            <Input
+                                placeholder="e.g. 5.0"
+                                value={targetDistance}
+                                onChange={handleDistanceChange}
+                                type="number"
+                                step="0.1"
+                                min="1.0"
+                                max="20.0"
+                            />
+                        </div>
                     </div>
                     <div className="flex-1 border rounded-xl p-4 shadow">
                         <h2 className="font-semibold mb-2">

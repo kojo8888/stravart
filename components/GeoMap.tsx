@@ -18,6 +18,9 @@ interface GeoMapProps {
 }
 
 export default function GeoMap({ center, geojsonData }: GeoMapProps) {
+    // Create a unique key for the GeoJSON component to force re-render when data changes
+    const geoJsonKey = geojsonData ? JSON.stringify(geojsonData).slice(0, 100) : 'no-data'
+    
     return (
         <MapContainer
             center={[center.lat, center.lng]}
@@ -31,7 +34,27 @@ export default function GeoMap({ center, geojsonData }: GeoMapProps) {
             <Marker position={[center.lat, center.lng]}>
                 <Popup>Your Location</Popup>
             </Marker>
-            {geojsonData && <GeoJSON data={geojsonData} />}
+            {geojsonData && (
+                <GeoJSON 
+                    key={geoJsonKey}
+                    data={geojsonData}
+                    style={{
+                        color: '#ff0000',
+                        weight: 3,
+                        opacity: 0.8
+                    }}
+                    pointToLayer={(feature, latlng) => {
+                        return L.circleMarker(latlng, {
+                            radius: 4,
+                            fillColor: '#ff0000',
+                            color: '#ff0000',
+                            weight: 2,
+                            opacity: 1,
+                            fillOpacity: 0.8
+                        })
+                    }}
+                />
+            )}
         </MapContainer>
     )
 }
