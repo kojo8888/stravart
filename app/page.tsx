@@ -27,14 +27,12 @@ interface Coordinates {
 
 const cities: Record<string, Coordinates> = {
     Munich: { lat: 48.1351, lng: 11.582 },
-    Berlin: { lat: 52.52, lng: 13.405 },
-    Hamburg: { lat: 53.5511, lng: 9.9937 },
 }
 
 const Home: React.FC = () => {
-    const [userLocation, setUserLocation] = useState<Coordinates | null>(null)
-    const [selectedCity, setSelectedCity] = useState<string>('')
-    const [selectedShape, setSelectedShape] = useState<string>('')
+    const [userLocation, setUserLocation] = useState<Coordinates | null>(cities.Munich)
+    const [selectedCity, setSelectedCity] = useState<string>('Munich')
+    const [selectedShape, setSelectedShape] = useState<string>('heart')
     const [selectedSize, setSelectedSize] = useState<string>('1500')
     const [loading, setLoading] = useState(false)
     const [result, setResult] = useState<any | null>(null)
@@ -160,41 +158,9 @@ const Home: React.FC = () => {
                 <div className="flex flex-col lg:flex-row gap-6">
                     <div className="flex-1 border rounded-xl p-4 shadow">
                         <h2 className="font-semibold mb-2">Location</h2>
-                        <Button onClick={getUserLocation}>
-                            Get My Location
-                        </Button>
-                        <Input
-                            placeholder="Search for a place"
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            className="mt-2"
-                        />
-                        <Button onClick={handleSearchPlace} className="mt-2">
-                            Search
-                        </Button>
-
-                        <p className="mt-2">Or select a city:</p>
-                        <Select
-                            onValueChange={handleCitySelect}
-                            value={selectedCity}
-                        >
-                            <SelectTrigger className="mt-2">
-                                {selectedCity || 'Select a city'}
-                            </SelectTrigger>
-                            <SelectContent>
-                                {Object.keys(cities).map((city) => (
-                                    <SelectItem key={city} value={city}>
-                                        {city}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
-                        {userLocation && (
-                            <p className="mt-2 text-sm text-gray-600">
-                                {userLocation.lat.toFixed(4)},{' '}
-                                {userLocation.lng.toFixed(4)}
-                            </p>
-                        )}
+                        <p className="text-sm text-gray-600 mb-2">
+                            Testing location: Munich ({userLocation?.lat.toFixed(4)}, {userLocation?.lng.toFixed(4)})
+                        </p>
                         <p className="mt-2">Define the size in meters:</p>
                         <Input
                             placeholder="Umkreis in Metern"
@@ -207,8 +173,8 @@ const Home: React.FC = () => {
                         <h2 className="font-semibold mb-2">
                             Select or Describe Shape
                         </h2>
-                        <p className="mt-2">
-                            Type a shape name or description:
+                        <p className="text-sm text-gray-600 mb-2">
+                            Testing shape: {selectedShape}
                         </p>
                         <Input
                             placeholder="e.g. heart, boat, cat..."
@@ -246,6 +212,18 @@ const Home: React.FC = () => {
                         value={75}
                         className="w-full max-w-xl mx-auto mb-4"
                     />
+                )}
+
+                {result && result.properties && (
+                    <div className="text-center mb-4 p-4 bg-gray-50 rounded-xl">
+                        <h3 className="font-semibold text-lg mb-2">Route Statistics</h3>
+                        <p className="text-gray-700">
+                            <strong>Total Distance:</strong> {result.properties.totalDistanceKm} km
+                        </p>
+                        <p className="text-gray-700">
+                            <strong>Points:</strong> {result.properties.pointCount}
+                        </p>
+                    </div>
                 )}
 
                 {userLocation && (

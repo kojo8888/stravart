@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import RBush from 'rbush'
 import knn from 'rbush-knn'
+import distance from '@turf/distance'
 
 // --- SVG Handling ---
 const parseSvgPathsAndPolylines = (svgString) => {
@@ -169,6 +170,28 @@ function snapPointsToNodes(points, rawNodes) {
     })
 }
 
+function calculateRouteDistance(coordinates) {
+    if (coordinates.length < 2) return 0
+    
+    let totalDistance = 0
+    for (let i = 0; i < coordinates.length - 1; i++) {
+        const from = coordinates[i]
+        const to = coordinates[i + 1]
+        totalDistance += distance(from, to, { units: 'kilometers' })
+    }
+    
+    // Add distance from last point back to first to complete the loop
+    if (coordinates.length > 2) {
+        totalDistance += distance(
+            coordinates[coordinates.length - 1], 
+            coordinates[0], 
+            { units: 'kilometers' }
+        )
+    }
+    
+    return Math.round(totalDistance * 100) / 100 // Round to 2 decimal places
+}
+
 // --- Heart Shape Optimization ---
 function generateHeart(numPoints = 80) {
     const result = []
@@ -271,13 +294,13 @@ function nelderMead(f, x0, maxIterations = 100) {
     return { x: simplex[0], fx: f(simplex[0]) }
 }
 
-async function fitShapeToStreets(shapeName, location, rawNodes) {
+async function fitShapeToStreets(shapeName, location, rawNodes, radius = 1500) {
     if (shapeName !== 'heart')
         throw new Error(`Unsupported shape: ${shapeName}`)
 
     const shape = normalizeShape(generateHeart())
     const degreesPerMeter = 1 / 111000
-    const scale = 1000 * degreesPerMeter
+    const scale = (radius * 0.8) * degreesPerMeter
     const initialParams = [scale, 0, location.lng, location.lat]
 
     const result = nelderMead(
@@ -287,9 +310,14 @@ async function fitShapeToStreets(shapeName, location, rawNodes) {
 
     const transformed = transformShape(shape, result.x)
     const snapped = snapPointsToNodes(transformed, rawNodes)
+    const totalDistance = calculateRouteDistance(snapped)
 
     return {
         type: 'FeatureCollection',
+        properties: {
+            totalDistanceKm: totalDistance,
+            pointCount: snapped.length
+        },
         features: snapped.map(([lon, lat]) => ({
             type: 'Feature',
             geometry: {
@@ -323,9 +351,14 @@ export async function POST(req) {
                 simplified.map((p) => [p.lng, p.lat]),
                 nodes
             )
+            const totalDistance = calculateRouteDistance(snapped)
 
             return NextResponse.json({
                 type: 'FeatureCollection',
+                properties: {
+                    totalDistanceKm: totalDistance,
+                    pointCount: snapped.length
+                },
                 features: snapped.map(([lon, lat]) => ({
                     type: 'Feature',
                     geometry: {
@@ -337,7 +370,7 @@ export async function POST(req) {
             })
         }
 
-        const result = await fitShapeToStreets(shape.trim(), location, nodes)
+        const result = await fitShapeToStreets(shape.trim(), location, nodes, radius)
         return NextResponse.json(result)
     } catch (err) {
         console.error('[BACKEND ERROR]', err)
