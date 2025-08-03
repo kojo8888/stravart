@@ -33,7 +33,7 @@ const Home: React.FC = () => {
     const [userLocation, setUserLocation] = useState<Coordinates | null>(cities.Munich)
     const [selectedCity, setSelectedCity] = useState<string>('Munich')
     const [selectedShape, setSelectedShape] = useState<string>('heart')
-    const [selectedSize, setSelectedSize] = useState<string>('1500')
+    const [targetDistance, setTargetDistance] = useState<string>('5.0')
     const [loading, setLoading] = useState(false)
     const [result, setResult] = useState<any | null>(null)
     const [searchQuery, setSearchQuery] = useState('')
@@ -92,8 +92,8 @@ const Home: React.FC = () => {
         setSelectedShape(e.target.value)
     }
 
-    const handleSizeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        setSelectedSize(e.target.value)
+    const handleDistanceChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        setTargetDistance(e.target.value)
     }
 
     const handleFetch = async () => {
@@ -106,7 +106,7 @@ const Home: React.FC = () => {
         try {
             const response = await axios.post('/api/fit-fetch', {
                 location: userLocation,
-                radius: parseInt(selectedSize) || 1500,
+                targetDistanceKm: parseFloat(targetDistance) || 5.0,
                 shape: selectedShape,
                 svg: customSvg,
             })
@@ -161,12 +161,16 @@ const Home: React.FC = () => {
                         <p className="text-sm text-gray-600 mb-2">
                             Testing location: Munich ({userLocation?.lat.toFixed(4)}, {userLocation?.lng.toFixed(4)})
                         </p>
-                        <p className="mt-2">Define the size in meters:</p>
+                        <p className="mt-2">Desired route distance (km):</p>
                         <Input
-                            placeholder="Umkreis in Metern"
+                            placeholder="e.g. 5.0"
                             className="mt-2"
-                            value={selectedSize}
-                            onChange={handleSizeChange}
+                            value={targetDistance}
+                            onChange={handleDistanceChange}
+                            type="number"
+                            step="0.1"
+                            min="1.0"
+                            max="20.0"
                         />
                     </div>
                     <div className="flex-1 border rounded-xl p-4 shadow">
@@ -215,15 +219,31 @@ const Home: React.FC = () => {
                 )}
 
                 {result && result.properties && (
-                    <div className="text-center mb-4 p-4 bg-gray-50 rounded-xl">
-                        <h3 className="font-semibold text-lg mb-2">Route Statistics</h3>
-                        <p className="text-gray-700">
-                            <strong>Total Distance:</strong> {result.properties.totalDistanceKm} km
-                        </p>
-                        <p className="text-gray-700">
-                            <strong>Points:</strong> {result.properties.pointCount}
-                        </p>
-                    </div>
+                    (() => {
+                        const target = result.properties.targetDistanceKm
+                        const actual = result.properties.totalDistanceKm
+                        const error = Math.abs(actual - target) / target
+                        const isWithinTolerance = error <= 0.2
+                        const errorPercent = Math.round(error * 100)
+                        
+                        return (
+                            <div className={`text-center mb-4 p-4 rounded-xl ${isWithinTolerance ? 'bg-green-50 border border-green-200' : 'bg-orange-50 border border-orange-200'}`}>
+                                <h3 className="font-semibold text-lg mb-2">Route Statistics</h3>
+                                <p className="text-gray-700">
+                                    <strong>Target Distance:</strong> {target} km
+                                </p>
+                                <p className="text-gray-700">
+                                    <strong>Actual Distance:</strong> {actual} km
+                                </p>
+                                <p className={`font-medium ${isWithinTolerance ? 'text-green-700' : 'text-orange-700'}`}>
+                                    <strong>Accuracy:</strong> {errorPercent}% difference {isWithinTolerance ? '✓' : '⚠️'}
+                                </p>
+                                <p className="text-gray-700">
+                                    <strong>Points:</strong> {result.properties.pointCount}
+                                </p>
+                            </div>
+                        )
+                    })()
                 )}
 
                 {userLocation && (

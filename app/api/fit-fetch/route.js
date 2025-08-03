@@ -230,9 +230,11 @@ function transformShape(shape, [scale, theta, tx, ty]) {
     ])
 }
 
-function costFunction(params, shape, coords) {
+function costFunction(params, shape, coords, targetDistanceKm = null) {
     const transformed = transformShape(shape, params)
-    let total = 0
+    
+    // Cost 1: Distance to nearest street nodes (shape fitting)
+    let shapeFitCost = 0
     for (const [x, y] of transformed) {
         let min = Infinity
         for (const [lon, lat] of coords) {
@@ -241,9 +243,19 @@ function costFunction(params, shape, coords) {
             const dist = dx * dx + dy * dy
             if (dist < min) min = dist
         }
-        total += min
+        shapeFitCost += min
     }
-    return total
+    
+    // Cost 2: Distance from target distance (if specified)
+    let distanceCost = 0
+    if (targetDistanceKm) {
+        const snapped = snapPointsToNodes(transformed, coords)
+        const actualDistance = calculateRouteDistance(snapped)
+        const distanceError = Math.abs(actualDistance - targetDistanceKm) / targetDistanceKm
+        distanceCost = distanceError * 1000 // Weight distance accuracy heavily
+    }
+    
+    return shapeFitCost + distanceCost
 }
 
 function nelderMead(f, x0, maxIterations = 100) {
@@ -294,19 +306,50 @@ function nelderMead(f, x0, maxIterations = 100) {
     return { x: simplex[0], fx: f(simplex[0]) }
 }
 
-async function fitShapeToStreets(shapeName, location, rawNodes, radius = 1500) {
+async function fitShapeToStreets(shapeName, location, rawNodes, targetDistanceKm = 5.0) {
     if (shapeName !== 'heart')
         throw new Error(`Unsupported shape: ${shapeName}`)
 
     const shape = normalizeShape(generateHeart())
     const degreesPerMeter = 1 / 111000
-    const scale = (radius * 0.8) * degreesPerMeter
-    const initialParams = [scale, 0, location.lng, location.lat]
+    // Estimate initial scale based on target distance
+    // Heart perimeter is roughly 5.5 times its width, so scale = targetKm / 5.5
+    const estimatedScale = (targetDistanceKm * 1000 / 5.5) * degreesPerMeter
+    const initialParams = [estimatedScale, 0, location.lng, location.lat]
 
-    const result = nelderMead(
-        (params) => costFunction(params, shape, rawNodes),
-        initialParams
+    let result = nelderMead(
+        (params) => costFunction(params, shape, rawNodes, targetDistanceKm),
+        initialParams,
+        200 // Increase iterations for better distance targeting
     )
+
+    // Iterative refinement to get closer to target distance (within 20%)
+    let attempts = 0
+    const maxAttempts = 3
+    
+    while (attempts < maxAttempts) {
+        const transformed = transformShape(shape, result.x)
+        const snapped = snapPointsToNodes(transformed, rawNodes)
+        const actualDistance = calculateRouteDistance(snapped)
+        const distanceError = Math.abs(actualDistance - targetDistanceKm) / targetDistanceKm
+        
+        // If within 20% tolerance, we're done
+        if (distanceError <= 0.2) break
+        
+        // Adjust scale based on distance ratio
+        const scaleAdjustment = targetDistanceKm / actualDistance
+        const adjustedParams = [...result.x]
+        adjustedParams[0] *= scaleAdjustment // Adjust scale parameter
+        
+        // Run optimization again with adjusted starting point
+        result = nelderMead(
+            (params) => costFunction(params, shape, rawNodes, targetDistanceKm),
+            adjustedParams,
+            150
+        )
+        
+        attempts++
+    }
 
     const transformed = transformShape(shape, result.x)
     const snapped = snapPointsToNodes(transformed, rawNodes)
@@ -316,7 +359,8 @@ async function fitShapeToStreets(shapeName, location, rawNodes, radius = 1500) {
         type: 'FeatureCollection',
         properties: {
             totalDistanceKm: totalDistance,
-            pointCount: snapped.length
+            pointCount: snapped.length,
+            targetDistanceKm: targetDistanceKm
         },
         features: snapped.map(([lon, lat]) => ({
             type: 'Feature',
@@ -332,7 +376,11 @@ async function fitShapeToStreets(shapeName, location, rawNodes, radius = 1500) {
 // --- API Endpoint ---
 export async function POST(req) {
     try {
-        const { location, shape, radius = 500, svg } = await req.json()
+        const { location, shape, targetDistanceKm = 5.0, svg } = await req.json()
+        
+        // Calculate appropriate fetch radius based on target distance
+        // Use 2x target distance to ensure enough streets are available
+        const radius = Math.max(500, Math.min(5000, targetDistanceKm * 2000))
 
         if (
             !location ||
@@ -345,7 +393,9 @@ export async function POST(req) {
         const nodes = await fetchStreetNodes(location, radius)
 
         if (svg && shape?.toLowerCase() === 'custom') {
-            const coords = convertSvgToLatLngPoints(svg, location, radius)
+            // For SVG, scale based on target distance
+            const svgRadius = targetDistanceKm * 1000 / 4 // Rough estimation for SVG scaling
+            const coords = convertSvgToLatLngPoints(svg, location, svgRadius)
             const simplified = simplifyRDP(coords, 0.0002)
             const snapped = snapPointsToNodes(
                 simplified.map((p) => [p.lng, p.lat]),
@@ -357,7 +407,8 @@ export async function POST(req) {
                 type: 'FeatureCollection',
                 properties: {
                     totalDistanceKm: totalDistance,
-                    pointCount: snapped.length
+                    pointCount: snapped.length,
+                    targetDistanceKm: targetDistanceKm
                 },
                 features: snapped.map(([lon, lat]) => ({
                     type: 'Feature',
@@ -370,7 +421,7 @@ export async function POST(req) {
             })
         }
 
-        const result = await fitShapeToStreets(shape.trim(), location, nodes, radius)
+        const result = await fitShapeToStreets(shape.trim(), location, nodes, targetDistanceKm)
         return NextResponse.json(result)
     } catch (err) {
         console.error('[BACKEND ERROR]', err)
