@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState } from 'react'
 import Head from 'next/head'
 import axios from 'axios'
 import { Button } from '@/components/ui/button'
@@ -8,8 +8,6 @@ import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
 import DrawingBoard from '@/components/DrawingBoard'
 import { getAvailableShapes } from '@/lib/shapes'
-import { checkPremiumAccess, getRemainingDays } from '@/lib/payment'
-import CheckoutButton from '@/components/CheckoutButton'
 import dynamic from 'next/dynamic'
 
 const DynamicMap = dynamic(
@@ -33,22 +31,6 @@ const Home: React.FC = () => {
     const [searchQuery, setSearchQuery] = useState('')
     const [isSearching, setIsSearching] = useState(false)
     const [customSvg, setCustomSvg] = useState<string | null>(null)
-    const [hasPremium, setHasPremium] = useState(false)
-    const [remainingDays, setRemainingDays] = useState<number | null>(null)
-    const [routeCount, setRouteCount] = useState(0)
-
-    useEffect(() => {
-        // Check premium access status
-        const premium = checkPremiumAccess()
-        setHasPremium(premium)
-        setRemainingDays(getRemainingDays())
-
-        // Get current route count from localStorage
-        const savedCount = localStorage.getItem('route_count')
-        if (savedCount) {
-            setRouteCount(parseInt(savedCount))
-        }
-    }, [])
 
     const getUserLocation = () => {
         if (navigator.geolocation) {
@@ -130,13 +112,6 @@ const Home: React.FC = () => {
             return
         }
 
-        // Check access limits
-        const MAX_FREE_ROUTES = 2
-        if (!hasPremium && routeCount >= MAX_FREE_ROUTES) {
-            alert(`You've reached the limit of ${MAX_FREE_ROUTES} free routes. Please upgrade to premium for unlimited access.`)
-            return
-        }
-
         setLoading(true)
         try {
             const response = await axios.post('/api/fit-fetch', {
@@ -147,13 +122,6 @@ const Home: React.FC = () => {
             })
             console.log('[FRONTEND] Response from backend:', response.data)
             setResult(response.data)
-
-            // Increment route count for free users
-            if (!hasPremium) {
-                const newCount = routeCount + 1
-                setRouteCount(newCount)
-                localStorage.setItem('route_count', newCount.toString())
-            }
         } catch (error) {
             console.error('[FRONTEND] Error fetching data:', error)
         } finally {
@@ -197,31 +165,6 @@ const Home: React.FC = () => {
                     Create your own Strava Art by selecting a location and
                     shape.
                 </p>
-
-                {/* Premium Status Banner */}
-                {hasPremium ? (
-                    <div className="max-w-2xl mx-auto mb-6 p-4 bg-gradient-to-r from-green-50 to-blue-50 border border-green-200 rounded-xl">
-                        <div className="text-center">
-                            <p className="text-green-700 font-medium">
-                                ✨ Premium Active - Unlimited Routes
-                            </p>
-                            {remainingDays && (
-                                <p className="text-sm text-green-600">
-                                    {remainingDays} days remaining
-                                </p>
-                            )}
-                        </div>
-                    </div>
-                ) : (
-                    <div className="max-w-2xl mx-auto mb-6 p-4 bg-gradient-to-r from-orange-50 to-red-50 border border-orange-200 rounded-xl">
-                        <div className="text-center space-y-3">
-                            <p className="text-orange-700 font-medium">
-                                Free Plan - {2 - routeCount} routes remaining
-                            </p>
-                            <CheckoutButton className="w-full max-w-xs mx-auto" />
-                        </div>
-                    </div>
-                )}
                 <div className="max-w-2xl mx-auto space-y-6">
                     {/* Step 1: Location */}
                     <div className="border rounded-xl p-6 shadow-sm bg-white">
@@ -368,9 +311,9 @@ const Home: React.FC = () => {
                             onClick={handleFetch} 
                             size="lg"
                             className="px-8"
-                            disabled={!userLocation || (shapeType === 'custom' && !customSvg) || (!hasPremium && routeCount >= 2)}
+                            disabled={!userLocation || (shapeType === 'custom' && !customSvg)}
                         >
-                            {!hasPremium && routeCount >= 2 ? '🔒 Upgrade Required' : '🚀 Generate Route'}
+                            🚀 Generate Route
                         </Button>
                         <Button
                             onClick={handleDownload}

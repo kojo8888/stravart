@@ -61,9 +61,6 @@ const normalizePoints = (points, center, radiusMeters) => {
 const simplifyRDP = (points, epsilon = 0.0002) => {
     if (points.length < 3) return points
 
-    const getSqDist = (p1, p2) =>
-        (p1.lat - p2.lat) ** 2 + (p1.lng - p2.lng) ** 2
-
     const getSqSegDist = (p, p1, p2) => {
         let x = p1.lng,
             y = p1.lat
@@ -351,6 +348,72 @@ async function fitShapeToStreets(shapeName, location, rawNodes, targetDistanceKm
     }
 }
 
+async function fitSvgToStreets(svgPoints, location, rawNodes, targetDistanceKm = 5.0) {
+    // Convert SVG points to [x, y] tuples and normalize
+    const normalizedSvg = normalizeShape(svgPoints.map(p => [p.lng, p.lat]))
+    const degreesPerMeter = 1 / 111000
+    
+    // Estimate perimeter ratio for SVG (similar to other shapes)
+    const estimatedPerimeterRatio = 6.0 // Default estimation for custom shapes
+    const estimatedScale = (targetDistanceKm * 1000 / estimatedPerimeterRatio) * degreesPerMeter
+    const initialParams = [estimatedScale, 0, location.lng, location.lat]
+
+    let result = nelderMead(
+        (params) => costFunction(params, normalizedSvg, rawNodes, targetDistanceKm),
+        initialParams,
+        200
+    )
+
+    // Iterative refinement to get closer to target distance (within 20%)
+    let attempts = 0
+    const maxAttempts = 3
+    
+    while (attempts < maxAttempts) {
+        const transformed = transformShape(normalizedSvg, result.x)
+        const snapped = snapPointsToNodes(transformed, rawNodes)
+        const actualDistance = calculateRouteDistance(snapped)
+        const distanceError = Math.abs(actualDistance - targetDistanceKm) / targetDistanceKm
+        
+        // If within 20% tolerance, we're done
+        if (distanceError <= 0.2) break
+        
+        // Adjust scale based on distance ratio
+        const scaleAdjustment = targetDistanceKm / actualDistance
+        const adjustedParams = [...result.x]
+        adjustedParams[0] *= scaleAdjustment
+        
+        // Run optimization again with adjusted starting point
+        result = nelderMead(
+            (params) => costFunction(params, normalizedSvg, rawNodes, targetDistanceKm),
+            adjustedParams,
+            150
+        )
+        
+        attempts++
+    }
+
+    const transformed = transformShape(normalizedSvg, result.x)
+    const snapped = snapPointsToNodes(transformed, rawNodes)
+    const totalDistance = calculateRouteDistance(snapped)
+
+    return {
+        type: 'FeatureCollection',
+        properties: {
+            totalDistanceKm: totalDistance,
+            pointCount: snapped.length,
+            targetDistanceKm: targetDistanceKm
+        },
+        features: snapped.map(([lon, lat]) => ({
+            type: 'Feature',
+            geometry: {
+                type: 'Point',
+                coordinates: [lon, lat],
+            },
+            properties: {},
+        })),
+    }
+}
+
 // --- API Endpoint ---
 export async function POST(req) {
     try {
@@ -371,32 +434,14 @@ export async function POST(req) {
         const nodes = await fetchStreetNodes(location, radius)
 
         if (svg && shape?.toLowerCase() === 'custom') {
-            // For SVG, scale based on target distance
-            const svgRadius = targetDistanceKm * 1000 / 4 // Rough estimation for SVG scaling
+            // Convert SVG to lat/lng points with basic scaling for initial processing
+            const svgRadius = targetDistanceKm * 1000 / 6 // Better initial estimation
             const coords = convertSvgToLatLngPoints(svg, location, svgRadius)
             const simplified = simplifyRDP(coords, 0.0002)
-            const snapped = snapPointsToNodes(
-                simplified.map((p) => [p.lng, p.lat]),
-                nodes
-            )
-            const totalDistance = calculateRouteDistance(snapped)
-
-            return NextResponse.json({
-                type: 'FeatureCollection',
-                properties: {
-                    totalDistanceKm: totalDistance,
-                    pointCount: snapped.length,
-                    targetDistanceKm: targetDistanceKm
-                },
-                features: snapped.map(([lon, lat]) => ({
-                    type: 'Feature',
-                    geometry: {
-                        type: 'Point',
-                        coordinates: [lon, lat],
-                    },
-                    properties: {},
-                })),
-            })
+            
+            // Use the new optimization-based fitting for SVG
+            const result = await fitSvgToStreets(simplified, location, nodes, targetDistanceKm)
+            return NextResponse.json(result)
         }
 
         const result = await fitShapeToStreets(shape.trim(), location, nodes, targetDistanceKm)

@@ -47,7 +47,6 @@ Strava Art is a Next.js 15 application that generates bike routes shaped like dr
 - **Geospatial**: Turf.js for distance calculations and nearest point operations
 - **SVG parsing**: Custom path/polyline parser for user drawings
 - **UI Components**: Radix UI primitives with Lucide React icons
-- **Payment Processing**: Stripe integration for premium subscriptions
 
 ### Shape Processing Pipeline
 
@@ -76,51 +75,24 @@ Strava Art is a Next.js 15 application that generates bike routes shaped like dr
 - Includes: `button.tsx`, `input.tsx`, `progress.tsx`, `select.tsx`
 - Consistent design system using Tailwind CSS and class-variance-authority
 
-**Payment System (`components/CheckoutButton.js` & Stripe APIs)**
-- Stripe integration for premium subscriptions (€5.99/month for unlimited routes)
-- Free tier: 2 route generations, premium tier: unlimited
-- Payment state management in `lib/payment.ts` with localStorage persistence
-- Checkout flow: Stripe Checkout → Success page → 30 days premium access
-- API endpoints: `/api/stripe/checkout` (create session), `/api/stripe/webhook` (handle events)
-- Success page: `/success` handles post-payment flow and stores premium access
-
 ### Environment Requirements
 
 - Node.js environment with Next.js 15
-- External APIs: Public Overpass Turbo and Nominatim APIs (no keys required)
-- Stripe API keys required for payment processing (see .env setup below)
+- No external API keys required (uses public Overpass Turbo and Nominatim APIs)
 - Client-side geolocation API for user location detection
-
-### Environment Variables (.env)
-
-```bash
-# Stripe Configuration
-STRIPE_SECRET_KEY="sk_live_..." # Stripe secret key
-NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY="pk_live_..." # Stripe publishable key  
-STRIPE_WEBHOOK_SECRET="whsec_..." # Webhook secret from Stripe dashboard
-
-# Optional APIs
-OPENAI_API_KEY="sk-proj-..." # If using AI features
-```
 
 ### File Structure
 
 ```
 stravart/
 ├── app/                          # Next.js 15 App Router
-│   ├── api/
-│   │   ├── fit-fetch/route.js   # Main API endpoint for shape fitting
-│   │   └── stripe/              # Stripe payment API endpoints
-│   │       ├── checkout/route.js # Create Stripe checkout session
-│   │       └── webhook/route.js # Handle Stripe webhook events
-│   ├── success/page.tsx         # Payment success page
+│   ├── api/fit-fetch/route.js   # Main API endpoint for shape fitting
 │   ├── globals.css              # Global styles and Tailwind imports
 │   ├── layout.tsx               # Root layout component
 │   ├── page.tsx                 # Main application page
 │   └── types/
 │       └── geokdbush.d.ts       # Type definitions for geokdbush library
 ├── components/                   # React components
-│   ├── CheckoutButton.js        # Stripe payment button component
 │   ├── DrawingBoard.tsx         # Interactive SVG drawing component
 │   ├── GeoMap.tsx              # Leaflet map integration component
 │   └── ui/                     # Radix UI-based component library
@@ -136,7 +108,6 @@ stravart/
 │   │   ├── square.ts           # Square shape generator
 │   │   ├── star.ts             # Star shape generator
 │   │   └── types.ts            # Shape type definitions
-│   ├── payment.ts              # Payment state management utilities
 │   └── utils.ts                # General utilities (cn function, etc.)
 ├── public/                      # Static assets
 │   ├── bavaria_bike_nodes.geojson # Sample geospatial data
@@ -161,24 +132,4 @@ stravart/
 - **Geospatial**: Turf.js for spatial calculations
 - **Optimization**: fmin library for mathematical optimization
 - **Spatial Indexing**: RBush with k-nearest neighbor search
-- **Payment Processing**: Stripe with @stripe/stripe-js for frontend integration
 - **Code Quality**: ESLint, Prettier, TypeScript strict mode
-
-### Payment System Details
-
-**Flow:**
-1. Free users get 2 route generations
-2. After limit: Premium upgrade prompt (€5.99)
-3. Stripe Checkout → Success page → 30 days unlimited access
-4. Premium status stored in localStorage with expiration
-
-**Components:**
-- `CheckoutButton`: Stripe integration with UI styling
-- `lib/payment.ts`: Access checking, remaining days calculation
-- Route count tracking in localStorage
-- Visual premium status indicators in main UI
-
-**API Endpoints:**
-- `POST /api/stripe/checkout`: Creates Stripe checkout session
-- `POST /api/stripe/webhook`: Handles payment completion events
-- Success redirect: `/success?session_id={SESSION_ID}`
