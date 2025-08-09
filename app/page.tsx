@@ -11,6 +11,7 @@ import { getAvailableShapes } from '@/lib/shapes'
 import { checkPremiumAccess, getRemainingDays } from '@/lib/payment'
 import CheckoutButton from '@/components/CheckoutButton'
 import dynamic from 'next/dynamic'
+import { GeoJsonObject } from 'geojson'
 
 const DynamicMap = dynamic(
     () => import('@/components/GeoMap').then((mod) => mod.default),
@@ -22,6 +23,12 @@ interface Coordinates {
     lng: number
 }
 
+interface ResultData extends GeoJsonObject {
+    properties?: {
+        totalDistanceKm: number
+    }
+}
+
 
 const Home: React.FC = () => {
     const [userLocation, setUserLocation] = useState<Coordinates | null>(null)
@@ -29,7 +36,7 @@ const Home: React.FC = () => {
     const [selectedShape, setSelectedShape] = useState<string>('heart')
     const [targetDistance, setTargetDistance] = useState<string>('5.0')
     const [loading, setLoading] = useState(false)
-    const [result, setResult] = useState<any | null>(null)
+    const [result, setResult] = useState<ResultData | null>(null)
     const [searchQuery, setSearchQuery] = useState('')
     const [isSearching, setIsSearching] = useState(false)
     const [customSvg, setCustomSvg] = useState<string | null>(null)
