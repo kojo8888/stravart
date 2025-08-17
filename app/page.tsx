@@ -11,7 +11,7 @@ import { getAvailableShapes } from '@/lib/shapes'
 import { checkPremiumAccess, getRemainingDays } from '@/lib/payment'
 import CheckoutButton from '@/components/CheckoutButton'
 import dynamic from 'next/dynamic'
-import { GeoJsonObject, FeatureCollection, Feature, Point } from 'geojson'
+import { FeatureCollection, Point } from 'geojson'
 
 const DynamicMap = dynamic(
     () => import('@/components/GeoMap').then((mod) => mod.default),
