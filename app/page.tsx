@@ -187,8 +187,8 @@ const Home: React.FC = () => {
 `
         
         // Add track points from GeoJSON features
-        geojsonData.features.forEach((feature: any) => {
-            if (feature.geometry && feature.geometry.type === 'Point') {
+        geojsonData.features?.forEach((feature) => {
+            if (feature.geometry && feature.geometry.type === 'Point' && feature.geometry.coordinates) {
                 const [lon, lat] = feature.geometry.coordinates
                 gpxContent += `      <trkpt lat="${lat}" lon="${lon}"></trkpt>\n`
             }
