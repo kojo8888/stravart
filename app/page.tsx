@@ -138,7 +138,7 @@ const Home: React.FC = () => {
         }
 
         // Check access limits
-        const MAX_FREE_ROUTES = 2
+        const MAX_FREE_ROUTES = 1000
         if (!hasPremium && routeCount >= MAX_FREE_ROUTES) {
             alert(`You've reached the limit of ${MAX_FREE_ROUTES} free routes. Please upgrade to premium for unlimited access.`)
             return
@@ -168,15 +168,49 @@ const Home: React.FC = () => {
         }
     }
 
+    const convertToGpx = (geojsonData: ResultData): string => {
+        if (!geojsonData.features) return ''
+        
+        const routeName = `Strava Art Route - ${selectedShape}`
+        const timestamp = new Date().toISOString()
+        
+        let gpxContent = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Strava Art" xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata>
+    <name>${routeName}</name>
+    <desc>Generated route shaped like ${selectedShape}</desc>
+    <time>${timestamp}</time>
+  </metadata>
+  <trk>
+    <name>${routeName}</name>
+    <trkseg>
+`
+        
+        // Add track points from GeoJSON features
+        geojsonData.features.forEach((feature: any) => {
+            if (feature.geometry && feature.geometry.type === 'Point') {
+                const [lon, lat] = feature.geometry.coordinates
+                gpxContent += `      <trkpt lat="${lat}" lon="${lon}"></trkpt>\n`
+            }
+        })
+        
+        gpxContent += `    </trkseg>
+  </trk>
+</gpx>`
+        
+        return gpxContent
+    }
+
     const handleDownload = () => {
         if (!result) return
 
+        const gpxContent = convertToGpx(result)
         const dataStr =
-            'data:text/json;charset=utf-8,' +
-            encodeURIComponent(JSON.stringify(result, null, 2))
+            'data:application/gpx+xml;charset=utf-8,' +
+            encodeURIComponent(gpxContent)
         const downloadAnchorNode = document.createElement('a')
         downloadAnchorNode.setAttribute('href', dataStr)
-        downloadAnchorNode.setAttribute('download', 'result.geojson')
+        downloadAnchorNode.setAttribute('download', 'strava-art-route.gpx')
         document.body.appendChild(downloadAnchorNode)
         downloadAnchorNode.click()
         downloadAnchorNode.remove()
@@ -223,7 +257,7 @@ const Home: React.FC = () => {
                     <div className="max-w-2xl mx-auto mb-6 p-4 bg-gradient-to-r from-orange-50 to-red-50 border border-orange-200 rounded-xl">
                         <div className="text-center space-y-3">
                             <p className="text-orange-700 font-medium">
-                                Free Plan - {2 - routeCount} routes remaining
+                                Free Plan - {1000 - routeCount} routes remaining
                             </p>
                             <CheckoutButton className="w-full max-w-xs mx-auto" />
                         </div>
@@ -375,9 +409,9 @@ const Home: React.FC = () => {
                             onClick={handleFetch} 
                             size="lg"
                             className="px-8"
-                            disabled={!userLocation || (shapeType === 'custom' && !customSvg) || (!hasPremium && routeCount >= 2)}
+                            disabled={!userLocation || (shapeType === 'custom' && !customSvg) || (!hasPremium && routeCount >= 1000)}
                         >
-                            {!hasPremium && routeCount >= 2 ? '🔒 Upgrade Required' : '🚀 Generate Route'}
+                            {!hasPremium && routeCount >= 1000 ? '🔒 Upgrade Required' : '🚀 Generate Route'}
                         </Button>
                         <Button
                             onClick={handleDownload}
@@ -386,7 +420,7 @@ const Home: React.FC = () => {
                             disabled={!result}
                             className="px-8"
                         >
-                            📥 Download
+                            📥 Download GPX
                         </Button>
                     </div>
                 </div>
