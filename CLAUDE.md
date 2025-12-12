@@ -31,6 +31,7 @@ Strava Art is a Next.js 15 application that generates bike routes shaped like dr
   - Custom SVG drawings from the drawing board
 - Uses Nelder-Mead optimization algorithm to fit shapes to street nodes
 - Returns GeoJSON FeatureCollection of points snapped to nearest streets
+- Includes GPX export functionality for GPS device compatibility
 
 **Shape Library (`lib/shapes/`)**
 - Modular shape system with TypeScript definitions
@@ -58,6 +59,7 @@ Strava Art is a Next.js 15 application that generates bike routes shaped like dr
 5. **Optimization**: Use Nelder-Mead to find best fit (scale, rotation, translation) that minimizes distance to street nodes
 6. **Snapping**: Snap each optimized point to nearest actual street node using spatial index
 7. **Output**: GeoJSON of street-snapped points forming the desired shape
+8. **Export**: Optional GPX conversion for GPS devices and cycling computers
 
 ### Core Components Detail
 
@@ -75,6 +77,12 @@ Strava Art is a Next.js 15 application that generates bike routes shaped like dr
 - Radix UI-based component library with custom styling
 - Includes: `button.tsx`, `input.tsx`, `progress.tsx`, `select.tsx`
 - Consistent design system using Tailwind CSS and class-variance-authority
+
+**Cookie Consent System (`components/CookieConsent.tsx`)**
+- GDPR-compliant cookie consent banner
+- localStorage-based consent tracking
+- Granular consent options for essential and analytics cookies
+- Dedicated cookie policy page at `/cookies`
 
 **Payment System (`components/CheckoutButton.js` & Stripe APIs)**
 - Stripe integration for premium subscriptions (€5.99/month for unlimited routes)
@@ -113,6 +121,7 @@ stravart/
 │   │   └── stripe/              # Stripe payment API endpoints
 │   │       ├── checkout/route.js # Create Stripe checkout session
 │   │       └── webhook/route.js # Handle Stripe webhook events
+│   ├── cookies/page.tsx         # Cookie policy page
 │   ├── success/page.tsx         # Payment success page
 │   ├── globals.css              # Global styles and Tailwind imports
 │   ├── layout.tsx               # Root layout component
@@ -121,6 +130,7 @@ stravart/
 │       └── geokdbush.d.ts       # Type definitions for geokdbush library
 ├── components/                   # React components
 │   ├── CheckoutButton.js        # Stripe payment button component
+│   ├── CookieConsent.tsx        # GDPR cookie consent banner
 │   ├── DrawingBoard.tsx         # Interactive SVG drawing component
 │   ├── GeoMap.tsx              # Leaflet map integration component
 │   └── ui/                     # Radix UI-based component library
@@ -182,3 +192,17 @@ stravart/
 - `POST /api/stripe/checkout`: Creates Stripe checkout session
 - `POST /api/stripe/webhook`: Handles payment completion events
 - Success redirect: `/success?session_id={SESSION_ID}`
+
+### Recent Features
+
+**GPX Export (`app/page.tsx:173-200`)**
+- Convert generated routes to GPX format for GPS devices
+- Includes route metadata (name, description, timestamp)
+- Compatible with cycling computers and navigation apps
+- Automatic filename generation based on shape and timestamp
+
+**GDPR Compliance (`components/CookieConsent.tsx`)**
+- Cookie consent banner with accept/decline options
+- Granular consent for essential vs analytics cookies
+- Consent state persistence in localStorage
+- Dedicated cookie policy page with detailed explanations
