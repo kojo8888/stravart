@@ -3,8 +3,17 @@
     "allow": [
       "Bash(npm install:*)",
       "Bash(npm run lint)",
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__get-library-docs",
+      "Bash(node --version:*)",
+      "Bash(npx @next/codemod@canary upgrade)"
     ],
     "deny": []
-  }
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "context7",
+    "next-devtools"
+  ]
 }
