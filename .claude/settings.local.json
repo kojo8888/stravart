@@ -7,7 +7,9 @@
       "mcp__context7__resolve-library-id",
       "mcp__context7__get-library-docs",
       "Bash(node --version:*)",
-      "Bash(npx @next/codemod@canary upgrade)"
+      "Bash(npx @next/codemod@canary upgrade)",
+      "Bash(node scripts/fetch-osm-streets.js:*)",
+      "Bash(npm run dev:*)"
     ],
     "deny": []
   },

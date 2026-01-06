@@ -206,3 +206,27 @@ stravart/
 - Granular consent for essential vs analytics cookies
 - Consent state persistence in localStorage
 - Dedicated cookie policy page with detailed explanations
+
+## Design & Style Guide
+
+### UX Guidelines
+1. 🎨 **Always use Tailwind CSS** - No custom CSS, use utility classes
+2. 🧩 **Always use shadcn/ui components** - Consistent, accessible components
+3. ⚪ **Light design** - Clean, minimal, airy layouts with plenty of white space
+4. 🎯 **Minimal colors** - Use very few colors (primarily neutral grays + 1-2 accent colors)
+5. ✨ **Modern aesthetic** - Clean typography, subtle shadows, smooth animations
+6. 📱 **Mobile-first** - Always design for mobile, then scale up
+
+### Design Principles
+- **Less is more**: Remove unnecessary elements
+- **Typography hierarchy**: Use font sizes to create clear hierarchy
+- **Generous spacing**: Use padding/margin liberally (p-6, p-8, gap-4)
+- **Subtle effects**: Use hover states, transitions, and minimal shadows
+- **Accessibility**: Ensure good contrast, keyboard navigation, semantic HTML
+
+## Core Rules & Constraints
+
+### Development Rules
+1. ❌ **Never push directly to `main`** - Use feature branches
+2. 🔒 **Use environment variables** - Never hardcode secrets
+3. **Use Context 7 MCP as a mcpServer for programming documentation

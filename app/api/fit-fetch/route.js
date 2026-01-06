@@ -3,6 +3,17 @@ import RBush from 'rbush'
 import knn from 'rbush-knn'
 import distance from '@turf/distance'
 import { generateShapePoints, normalizeShape, getShape } from '@/lib/shapes'
+import fs from 'fs'
+import path from 'path'
+
+// ========================================
+// FIXTURE MODE - Toggle for development
+// ========================================
+// Set to true to use cached Munich fixture (fast, no API calls)
+// Set to false to use live Overpass API (slower, production mode)
+const USE_FIXTURE = true
+const FIXTURE_PATH = path.join(process.cwd(), 'fixtures/munich-streets.geojson')
+// ========================================
 
 // --- SVG Handling ---
 const parseSvgPathsAndPolylines = (svgString) => {
@@ -119,6 +130,14 @@ const convertSvgToLatLngPoints = (svgString, center, radius) => {
 
 // --- Overpass + Fitting ---
 async function fetchStreetNodes(location, radius) {
+    // FIXTURE MODE: Load from cached file
+    if (USE_FIXTURE) {
+        console.log('🔧 [FIXTURE MODE] Loading cached street data from:', FIXTURE_PATH)
+        return loadStreetNodesFromFixture(location, radius)
+    }
+
+    // LIVE MODE: Fetch from Overpass API
+    console.log('🌍 [LIVE MODE] Fetching from Overpass API...')
     const query = `
     [out:json][timeout:25];
     (
@@ -147,6 +166,36 @@ async function fetchStreetNodes(location, radius) {
 
     if (coords.length === 0) throw new Error('No street nodes found')
     return coords
+}
+
+// Load street nodes from cached GeoJSON fixture
+function loadStreetNodesFromFixture(location, radius) {
+    try {
+        const geojsonData = fs.readFileSync(FIXTURE_PATH, 'utf8')
+        const geojson = JSON.parse(geojsonData)
+
+        const coords = []
+
+        // Extract coordinates from GeoJSON LineStrings
+        for (const feature of geojson.features) {
+            if (feature.geometry.type === 'LineString') {
+                for (const coord of feature.geometry.coordinates) {
+                    coords.push([coord[0], coord[1]]) // [lon, lat]
+                }
+            }
+        }
+
+        console.log(`✅ Loaded ${coords.length} street nodes from fixture`)
+
+        if (coords.length === 0) {
+            throw new Error('No street nodes found in fixture')
+        }
+
+        return coords
+    } catch (error) {
+        console.error('❌ Failed to load fixture:', error.message)
+        throw new Error(`Fixture loading failed: ${error.message}`)
+    }
 }
 
 function snapPointsToNodes(points, rawNodes) {
