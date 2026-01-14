@@ -11,7 +11,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Architecture
 
-Strava Art is a Next.js 15 application that generates bike routes shaped like drawings by fitting them to real street networks using mathematical optimization.
+Strava Art is a Next.js 15 application that generates bike routes shaped like drawings by fitting them to real street networks.
+
+**Current Status:** The application currently uses geometric optimization (Nelder-Mead) with the Overpass API. A new **graph-based routing system** is in development (Phase 3) that will replace this with A* pathfinding for 20-40x performance improvement.
+
+### Routing Algorithms (Two Approaches)
+
+**Current: Geometric Optimization (Legacy)**
+- Uses Nelder-Mead algorithm to fit shapes to street nodes
+- Fetches data from Overpass Turbo API (slow, rate-limited)
+- Takes 24+ minutes for single route, limited to 15km routes
+- Located in `app/api/fit-fetch/route.js`
+
+**New: Graph-Based Routing (In Development - Phase 3)**
+- Uses A* pathfinding on pre-built street network graph
+- Offline Bavaria street data from Geofabrik (2.5M street features)
+- Target: <60 seconds for 15km routes (20-40x faster)
+- Located in `lib/graph/`
+- See `/docs/graph-routing-development-plan.md` for details
 
 ### Core Components
 
@@ -41,10 +58,21 @@ Strava Art is a Next.js 15 application that generates bike routes shaped like dr
 - Shape normalization and point generation functions
 
 **Key Libraries**
+
+*Current (Geometric Optimization):*
 - **Spatial indexing**: RBush with k-nearest neighbor search for efficient street node matching
-- **Map rendering**: react-leaflet with Leaflet.js (dynamically imported to avoid SSR issues)
-- **HTTP requests**: Axios for frontend API calls
 - **Optimization**: fmin library for Nelder-Mead algorithm implementation
+- **HTTP requests**: Axios for Overpass API calls
+
+*New (Graph-Based Routing):*
+- **Graph structure**: graphology for graph data structures
+- **Pathfinding**: graphology-shortest-path for A* algorithm
+- **Spatial indexing**: RBush for fast nearest-node queries (O(log n))
+- **Streaming**: stream-json for processing large GeoJSON files
+- **OSM data**: Geofabrik Bavaria PBF (2.5M street features, 808 MB)
+
+*Shared:*
+- **Map rendering**: react-leaflet with Leaflet.js (dynamically imported to avoid SSR issues)
 - **Geospatial**: Turf.js for distance calculations and nearest point operations
 - **SVG parsing**: Custom path/polyline parser for user drawings
 - **UI Components**: Radix UI primitives with Lucide React icons
@@ -139,6 +167,16 @@ stravart/
 │       ├── progress.tsx
 │       └── select.tsx
 ├── lib/                         # Utility libraries and business logic
+│   ├── graph/                   # NEW: Graph-based routing system (Phase 3)
+│   │   ├── types.ts            # Type definitions for graph routing
+│   │   ├── builder.ts          # GeoJSON → Graph conversion (2-pass streaming)
+│   │   ├── spatial-index.ts    # RBush spatial indexing for fast queries
+│   │   ├── cache.ts            # Graph caching utilities (currently skipped)
+│   │   ├── utils.ts            # Helper functions (haversine, etc.)
+│   │   ├── router.ts           # TODO: A* pathfinding implementation
+│   │   ├── shape-to-waypoints.ts  # TODO: Shape → Waypoints conversion
+│   │   ├── waypoint-router.ts  # TODO: Connect waypoints into routes
+│   │   └── test-simple.ts      # Simple graph test
 │   ├── shapes/                  # Shape generation system
 │   │   ├── circle.ts           # Circle shape generator
 │   │   ├── heart.ts            # Heart shape generator
@@ -152,7 +190,20 @@ stravart/
 │   ├── bavaria_bike_nodes.geojson # Sample geospatial data
 │   ├── *.png                   # Leaflet map icons and markers
 │   └── *.svg                   # UI icons and assets
+├── fixtures/                    # NEW: OSM street data (gitignored)
+│   ├── bayern-260105.osm.pbf   # Bavaria OSM data (789 MB, gitignored)
+│   ├── bayern-highways-filtered.osm.pbf  # Filtered cycling roads (193 MB)
+│   ├── bavaria-streets.geojson # Converted street data (808 MB, 2.5M features)
+│   └── .gitkeep                # Keep directory in git
+├── scripts/                     # NEW: Data processing & testing scripts
+│   ├── convert-pbf-to-geojson.sh  # Convert PBF → GeoJSON
+│   ├── build-bavaria-graph.ts  # Build graph from GeoJSON
+│   └── analyze-bavaria-geojson.js  # Analyze GeoJSON structure
+├── docs/                        # Documentation
+│   └── graph-routing-development-plan.md  # Graph routing implementation plan
+├── test-outputs/                # NEW: Test results directory
 ├── styles/                      # Legacy CSS modules (if used)
+├── osmium-config.json           # NEW: Osmium export configuration
 └── Configuration files:
     ├── components.json          # Radix UI/shadcn configuration
     ├── next.config.ts          # Next.js configuration
@@ -169,10 +220,55 @@ stravart/
 - **UI Library**: Radix UI primitives with custom styling
 - **Maps**: Leaflet.js with react-leaflet integration
 - **Geospatial**: Turf.js for spatial calculations
-- **Optimization**: fmin library for mathematical optimization
+- **Optimization (Legacy)**: fmin library for Nelder-Mead algorithm
+- **Graph Routing (New)**: graphology, graphology-shortest-path, RBush
+- **Data Processing**: osmium-tool, stream-json, stream-chain
 - **Spatial Indexing**: RBush with k-nearest neighbor search
 - **Payment Processing**: Stripe with @stripe/stripe-js for frontend integration
 - **Code Quality**: ESLint, Prettier, TypeScript strict mode
+
+### Graph Routing System (In Development)
+
+**Overview:**
+The new graph-based routing system uses A* pathfinding on a pre-built street network graph of Bavaria, replacing the slow geometric optimization approach.
+
+**Data Pipeline:**
+1. **Source:** Geofabrik Bavaria PBF (789 MB, updated daily)
+2. **Filter:** Extract cycling-friendly roads using osmium-tool (→ 193 MB)
+3. **Convert:** Export to GeoJSON format (→ 808 MB, 2.5M street features)
+4. **Build Graph:** 2-pass streaming approach creates graph (→ 3.76M nodes, 2.66M edges)
+5. **Index:** Build RBush spatial index for O(log n) nearest-node queries
+
+**Graph Statistics:**
+- **Nodes:** 3,759,895 (intersection points only)
+- **Edges:** 2,662,724 (street segments)
+- **Coverage:** All of Bavaria (47.25°N-50.57°N, 8.97°E-13.87°E)
+- **Build Time:** ~3.7 minutes
+- **Spatial Index:** 3.3 seconds to build, <15ms queries
+
+**Key Optimizations:**
+- **Intersection-only nodes:** Reduced from 25M+ to 3.76M nodes by only creating nodes where streets meet
+- **Streaming GeoJSON parsing:** Processes 808 MB file without loading into memory
+- **2-pass approach:** Pass 1 finds intersections, Pass 2 builds graph
+- **Spatial indexing:** Fast nearest-node lookups across entire Bavaria
+
+**Current Limitations:**
+- Graph caching skipped (JSON.stringify fails on large graph)
+- Rebuilds graph in ~3.7 minutes each time (acceptable for development)
+- Memory usage peaks at 4-6GB during build
+- TODO: Implement SQLite or binary format caching for production
+
+**Development Commands:**
+```bash
+# Build graph from GeoJSON (takes ~3.7 minutes)
+NODE_OPTIONS="--max-old-space-size=8192" npx tsx scripts/build-bavaria-graph.ts
+
+# Convert PBF to GeoJSON (one-time setup)
+./scripts/convert-pbf-to-geojson.sh
+
+# Analyze GeoJSON structure
+node scripts/analyze-bavaria-geojson.js
+```
 
 ### Payment System Details
 

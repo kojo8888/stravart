@@ -11,7 +11,7 @@ import { getAvailableShapes } from '@/lib/shapes'
 import { checkPremiumAccess, getRemainingDays } from '@/lib/payment'
 import CheckoutButton from '@/components/CheckoutButton'
 import dynamic from 'next/dynamic'
-import { FeatureCollection, Point } from 'geojson'
+import { FeatureCollection, Point, LineString, Geometry } from 'geojson'
 
 const DynamicMap = dynamic(
     () => import('@/components/GeoMap').then((mod) => mod.default),
@@ -23,11 +23,17 @@ interface Coordinates {
     lng: number
 }
 
-interface ResultData extends FeatureCollection<Point> {
+interface ResultData extends FeatureCollection<Geometry> {
     properties?: {
-        totalDistanceKm: number
-        pointCount: number
-        targetDistanceKm: number
+        totalDistanceKm?: number
+        actualDistanceKm?: number
+        pointCount?: number
+        targetDistanceKm?: number
+        waypoints?: number
+        segments?: number
+        totalNodes?: number
+        routingTimeMs?: number
+        method?: string
     }
 }
 
@@ -148,7 +154,18 @@ const Home: React.FC = () => {
 
         setLoading(true)
         try {
-            const response = await axios.post('/api/fit-fetch', {
+            // Check if location is in Oberbayern/Munich region for graph-based routing
+            const inOberbayern =
+                userLocation.lat >= 47.39 && userLocation.lat <= 49.09 &&
+                userLocation.lng >= 10.72 && userLocation.lng <= 13.10
+
+            // Use graph-based routing for supported regions and predefined shapes
+            const useGraphRouting = inOberbayern && shapeType === 'predefined'
+            const endpoint = useGraphRouting ? '/api/graph-route' : '/api/fit-fetch'
+
+            console.log(`[FRONTEND] Using ${useGraphRouting ? 'graph-based' : 'optimization-based'} routing (${endpoint})`)
+
+            const response = await axios.post(endpoint, {
                 location: userLocation,
                 targetDistanceKm: parseFloat(targetDistance) || 5.0,
                 shape: shapeType === 'predefined' ? selectedShape : 'custom',
@@ -165,6 +182,9 @@ const Home: React.FC = () => {
             }
         } catch (error) {
             console.error('[FRONTEND] Error fetching data:', error)
+            if (axios.isAxiosError(error) && error.response?.data?.error) {
+                alert(`Route generation failed: ${error.response.data.error}\n\n${error.response.data.message || ''}`)
+            }
         } finally {
             setLoading(false)
         }
@@ -172,10 +192,10 @@ const Home: React.FC = () => {
 
     const convertToGpx = (geojsonData: ResultData): string => {
         if (!geojsonData.features) return ''
-        
+
         const routeName = `Strava Art Route - ${selectedShape}`
         const timestamp = new Date().toISOString()
-        
+
         let gpxContent = `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="Strava Art" xmlns="http://www.topografix.com/GPX/1/1">
   <metadata>
@@ -187,19 +207,29 @@ const Home: React.FC = () => {
     <name>${routeName}</name>
     <trkseg>
 `
-        
+
         // Add track points from GeoJSON features
         geojsonData.features?.forEach((feature) => {
-            if (feature.geometry && feature.geometry.type === 'Point' && feature.geometry.coordinates) {
+            if (!feature.geometry) return
+
+            // Handle Points (old API format)
+            if (feature.geometry.type === 'Point' && feature.geometry.coordinates) {
                 const [lon, lat] = feature.geometry.coordinates
                 gpxContent += `      <trkpt lat="${lat}" lon="${lon}"></trkpt>\n`
             }
+
+            // Handle LineStrings (new graph-based API format)
+            if (feature.geometry.type === 'LineString' && feature.geometry.coordinates) {
+                feature.geometry.coordinates.forEach(([lon, lat]) => {
+                    gpxContent += `      <trkpt lat="${lat}" lon="${lon}"></trkpt>\n`
+                })
+            }
         })
-        
+
         gpxContent += `    </trkseg>
   </trk>
 </gpx>`
-        
+
         return gpxContent
     }
 
@@ -453,8 +483,13 @@ const Home: React.FC = () => {
                             <div className="text-center">
                                 <div className="inline-block p-4 bg-white border rounded-xl">
                                     <p className="text-black font-semibold text-lg">
-                                        🎯 Route Distance: <strong>{result.properties.totalDistanceKm} km</strong>
+                                        🎯 Route Distance: <strong>{result.properties.actualDistanceKm || result.properties.totalDistanceKm} km</strong>
                                     </p>
+                                    {result.properties.method === 'graph-based' && (
+                                        <p className="text-sm text-gray-600 mt-1">
+                                            ⚡ Graph-based routing • {result.properties.segments} segments • {result.properties.routingTimeMs}ms
+                                        </p>
+                                    )}
                                 </div>
                             </div>
                         )}

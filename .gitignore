@@ -42,3 +42,16 @@ next-env.d.ts
 
 # Claude
 .mcp.json
+
+# Large OSM data files (fixtures)
+fixtures/*.osm.pbf
+fixtures/*-filtered.osm.pbf
+fixtures/bavaria-streets.geojson
+fixtures/oberbayern-streets.geojson
+fixtures/*-graph.json
+
+# Keep small test fixtures
+!fixtures/test-*.geojson
+
+# Osmium export configuration (optional - could be committed)
+# osmium-config.json

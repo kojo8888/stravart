@@ -35,13 +35,26 @@ export default function GeoMap({ center, geojsonData }: GeoMapProps) {
                 <Popup>Your Location</Popup>
             </Marker>
             {geojsonData && (
-                <GeoJSON 
+                <GeoJSON
                     key={geoJsonKey}
                     data={geojsonData}
-                    style={{
-                        color: '#ff0000',
-                        weight: 3,
-                        opacity: 0.8
+                    style={(feature) => {
+                        // Style for LineStrings (routes from graph-based API)
+                        if (feature?.geometry?.type === 'LineString') {
+                            return {
+                                color: '#2563eb', // Blue for routes
+                                weight: 4,
+                                opacity: 0.9,
+                                lineJoin: 'round',
+                                lineCap: 'round'
+                            }
+                        }
+                        // Style for Points (old optimization-based API)
+                        return {
+                            color: '#ff0000',
+                            weight: 3,
+                            opacity: 0.8
+                        }
                     }}
                     pointToLayer={(feature, latlng) => {
                         return L.circleMarker(latlng, {

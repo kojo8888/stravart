@@ -9,7 +9,19 @@
       "Bash(node --version:*)",
       "Bash(npx @next/codemod@canary upgrade)",
       "Bash(node scripts/fetch-osm-streets.js:*)",
-      "Bash(npm run dev:*)"
+      "Bash(npm run dev:*)",
+      "Bash(osmium --version:*)",
+      "Bash(chmod:*)",
+      "Bash(./scripts/convert-pbf-to-geojson.sh:*)",
+      "Bash(ls:*)",
+      "Bash(python3:*)",
+      "Bash(node scripts/analyze-bavaria-geojson.js:*)",
+      "Bash(npx tsx:*)",
+      "Bash(node scripts/build-bavaria-graph.js:*)",
+      "Bash(NODE_OPTIONS=\"--max-old-space-size=8192\" npx tsx:*)",
+      "Bash(tee:*)",
+      "Bash(tail:*)",
+      "Bash(find:*)"
     ],
     "deny": []
   },
