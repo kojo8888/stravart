@@ -121,12 +121,12 @@ function getShapeType(shapeName: string): 'heart' | 'circle' | 'star' | 'square'
  */
 function calculateRadius(targetDistanceKm: number, shapeType: string): number {
     // Empirically measured: route distance / radius ratio
-    // From curve-router-test: 12.35km / 1500m = 8.23 km per 1000m radius
+    // Calibrated from Munich street network tests (30km target)
     const routeToRadiusRatios: Record<string, number> = {
-        circle: 6.5,   // Circle routes are more efficient
-        heart: 8.2,    // Heart: 12.35km / 1.5km = 8.23
-        star: 7.0,     // Star has sharp points
-        square: 5.5,   // Square aligns with grid
+        circle: 19.5,  // Circle: needs higher ratio due to smooth curves
+        heart: 10.5,   // Heart: adjusted for better accuracy
+        star: 15.0,    // Star: 31.6km at 30km target = good
+        square: 18.5,  // Square: adjusted for better accuracy
     }
 
     // Minimum radius for good shape quality
