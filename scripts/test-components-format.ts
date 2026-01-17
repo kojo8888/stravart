@@ -49,11 +49,25 @@ async function testFormat() {
 
     // Try to understand the actual format
     console.log('🔍 Analyzing component structure...')
+    console.log('Components is an array of arrays where each sub-array contains node IDs in that component')
+    console.log('')
+
+    // Show component membership for sample nodes
     const sampleNodes = graph.nodes().slice(0, 10)
+    const nodeToComponent = new Map<string, number>()
+
+    // Build reverse mapping
+    for (let i = 0; i < components.length; i++) {
+        for (const nodeId of components[i]) {
+            nodeToComponent.set(nodeId, i)
+        }
+    }
+
     for (const nodeId of sampleNodes) {
-        const componentId = components[nodeId]
+        const componentId = nodeToComponent.get(nodeId)
         const degree = graph.degree(nodeId)
-        console.log(`Node "${nodeId}" (degree=${degree}) => component ${componentId} (type: ${typeof componentId})`)
+        const componentSize = componentId !== undefined ? components[componentId].length : 'unknown'
+        console.log(`Node "${nodeId}" (degree=${degree}) => component ${componentId} (size: ${componentSize})`)
     }
 }
 

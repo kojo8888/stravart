@@ -21,7 +21,18 @@
       "Bash(NODE_OPTIONS=\"--max-old-space-size=8192\" npx tsx:*)",
       "Bash(tee:*)",
       "Bash(tail:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(./scripts/create-munich-bbox.sh:*)",
+      "Bash(NODE_OPTIONS=\"--max-old-space-size=4096\" npx tsx:*)",
+      "Bash(npm i:*)",
+      "Bash(cat:*)",
+      "Bash(npx tsc:*)",
+      "Bash(curl:*)",
+      "Bash(lsof:*)",
+      "Bash(pkill:*)",
+      "Bash(xargs kill -9)",
+      "Bash(__NEW_LINE_e38be29d7c98d28a__ echo \"=== COMPARISON ===\")",
+      "Bash(__NEW_LINE_e38be29d7c98d28a__ echo \"\")"
     ],
     "deny": []
   },

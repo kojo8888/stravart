@@ -173,26 +173,34 @@ export function getRouteStatistics(route: Route) {
 
 /**
  * Convert route to GeoJSON format for visualization
+ * Creates separate LineStrings for each segment to avoid straight lines across gaps
  */
 export function routeToGeoJSON(route: Route) {
+    // Create a separate LineString feature for each segment
+    // This prevents straight lines being drawn across gaps where routing failed
+    const features = route.segments.map((segment, index) => ({
+        type: 'Feature' as const,
+        properties: {
+            segmentIndex: index,
+            distance: Math.round(segment.distance),
+            nodeCount: segment.coordinates.length,
+        },
+        geometry: {
+            type: 'LineString' as const,
+            coordinates: segment.coordinates.map((coord) => [coord.lng, coord.lat]),
+        },
+    }))
+
     return {
         type: 'FeatureCollection' as const,
-        features: [
-            {
-                type: 'Feature' as const,
-                properties: {
-                    distance: route.totalDistance,
-                    distanceKm: (route.totalDistance / 1000).toFixed(2),
-                    waypoints: route.waypoints.length,
-                    segments: route.segments.length,
-                    nodes: route.coordinates.length,
-                },
-                geometry: {
-                    type: 'LineString' as const,
-                    coordinates: route.coordinates.map((coord) => [coord.lng, coord.lat]),
-                },
-            },
-        ],
+        properties: {
+            distance: route.totalDistance,
+            distanceKm: (route.totalDistance / 1000).toFixed(2),
+            waypoints: route.waypoints.length,
+            segments: route.segments.length,
+            totalNodes: route.coordinates.length,
+        },
+        features,
     }
 }
 

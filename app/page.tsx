@@ -25,15 +25,29 @@ interface Coordinates {
 
 interface ResultData extends FeatureCollection<Geometry> {
     properties?: {
-        totalDistanceKm?: number
+        totalDistanceKm?: string
         actualDistanceKm?: number
         pointCount?: number
         targetDistanceKm?: number
         waypoints?: number
         segments?: number
+        segmentCount?: number
         totalNodes?: number
+        nodeCount?: number
         routingTimeMs?: number
+        graphLoadTimeMs?: number
         method?: string
+        shape?: string
+        radiusMeters?: number
+        corridorWidth?: number
+        directionPenalty?: number
+        distanceError?: string
+        connectivity?: {
+            connectedPoints: number
+            totalPoints: number
+            percentage: number
+            allConnected: boolean
+        }
     }
 }
 
@@ -154,16 +168,21 @@ const Home: React.FC = () => {
 
         setLoading(true)
         try {
-            // Check if location is in Oberbayern/Munich region for graph-based routing
-            const inOberbayern =
-                userLocation.lat >= 47.39 && userLocation.lat <= 49.09 &&
-                userLocation.lng >= 10.72 && userLocation.lng <= 13.10
+            // Check if location is in Munich area for curve-following routing
+            // Munich bounds: 20km radius from city center
+            const inMunich =
+                userLocation.lat >= 47.9549 && userLocation.lat <= 48.3153 &&
+                userLocation.lng >= 11.3120 && userLocation.lng <= 11.8520
 
-            // Use graph-based routing for supported regions and predefined shapes
-            const useGraphRouting = inOberbayern && shapeType === 'predefined'
-            const endpoint = useGraphRouting ? '/api/graph-route' : '/api/fit-fetch'
+            // Use curve-following router for Munich (predefined shapes only)
+            // This creates actual rideable routes that follow the shape outline
+            const useCurveRouter = inMunich && shapeType === 'predefined'
+            const endpoint = useCurveRouter ? '/api/shape-route' : '/api/fit-fetch'
 
-            console.log(`[FRONTEND] Using ${useGraphRouting ? 'graph-based' : 'optimization-based'} routing (${endpoint})`)
+            console.log(`[FRONTEND] Using ${useCurveRouter ? 'curve-following' : 'optimization'} routing (${endpoint})`)
+            if (useCurveRouter) {
+                console.log('[FRONTEND] Munich + predefined shape - using curve-following router for rideable route')
+            }
 
             const response = await axios.post(endpoint, {
                 location: userLocation,
@@ -478,16 +497,66 @@ const Home: React.FC = () => {
                             </div>
                         </div>
 
-                        {/* Route Distance */}
+                        {/* Route Distance and Info */}
                         {result.properties && (
                             <div className="text-center">
-                                <div className="inline-block p-4 bg-white border rounded-xl">
+                                <div className="inline-block p-4 bg-white border rounded-xl shadow-sm">
                                     <p className="text-black font-semibold text-lg">
                                         🎯 Route Distance: <strong>{result.properties.actualDistanceKm || result.properties.totalDistanceKm} km</strong>
                                     </p>
+
+                                    {/* Curve-following route info */}
+                                    {result.properties.method === 'curve-following' && (
+                                        <div className="mt-3 space-y-2">
+                                            <div className="flex items-center justify-center gap-2">
+                                                <span className="px-2 py-1 bg-green-100 text-green-800 text-xs font-medium rounded-full">
+                                                    ✅ Rideable Route
+                                                </span>
+                                                <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs font-medium rounded-full">
+                                                    {result.properties.segmentCount} segments
+                                                </span>
+                                                <span className="px-2 py-1 bg-purple-100 text-purple-800 text-xs font-medium rounded-full">
+                                                    {result.properties.nodeCount} nodes
+                                                </span>
+                                            </div>
+                                            <p className="text-sm text-gray-600">
+                                                🛣️ Curve-following A* • {result.properties.corridorWidth}m corridor
+                                            </p>
+                                            {result.properties.distanceError && (
+                                                <p className="text-xs text-gray-500">
+                                                    Target: {result.properties.targetDistanceKm}km • Actual: {result.properties.actualDistanceKm}km ({result.properties.distanceError} variance)
+                                                </p>
+                                            )}
+                                            {result.properties.routingTimeMs && (
+                                                <p className="text-xs text-gray-400">
+                                                    Routed in {result.properties.routingTimeMs}ms
+                                                </p>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {/* Optimization with verification info */}
+                                    {result.properties.method === 'optimization-with-verification' && result.properties.connectivity && (
+                                        <div className="mt-2 space-y-1">
+                                            <p className="text-sm text-gray-600">
+                                                🔗 Connectivity: <strong>{result.properties.connectivity.connectedPoints}/{result.properties.connectivity.totalPoints}</strong> points ({result.properties.connectivity.percentage}%)
+                                            </p>
+                                            {result.properties.connectivity.allConnected ? (
+                                                <p className="text-sm text-green-600 font-medium">
+                                                    ✅ All points on connected street network
+                                                </p>
+                                            ) : (
+                                                <p className="text-sm text-yellow-600">
+                                                    ⚠️ Some points may be on disconnected streets
+                                                </p>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {/* Legacy graph-based info */}
                                     {result.properties.method === 'graph-based' && (
                                         <p className="text-sm text-gray-600 mt-1">
-                                            ⚡ Graph-based routing • {result.properties.segments} segments • {result.properties.routingTimeMs}ms
+                                            ⚡ Graph routing • {result.properties.waypoints} waypoints • {result.properties.segments} segments
                                         </p>
                                     )}
                                 </div>

@@ -13,15 +13,18 @@ let graphCache: StreetGraph | null = null
 let spatialIndexCache: SpatialIndex | null = null
 let buildPromise: Promise<{ graph: StreetGraph; spatialIndex: SpatialIndex }> | null = null
 
-const GEOJSON_PATH = path.join(process.cwd(), 'fixtures/oberbayern-streets.geojson')
+const GEOJSON_PATH = path.join(process.cwd(), 'fixtures/munich-streets.geojson')
 
-// Oberbayern bounding box for region checking
-const OBERBAYERN_BOUNDS = {
-    minLat: 47.3929,
-    maxLat: 49.0882,
-    minLng: 10.7221,
-    maxLng: 13.1047,
+// Munich bounding box (20km radius from city center)
+const MUNICH_BOUNDS = {
+    minLat: 47.9549,
+    maxLat: 48.3153,
+    minLng: 11.3120,
+    maxLng: 11.8520,
 }
+
+// For backwards compatibility
+const OBERBAYERN_BOUNDS = MUNICH_BOUNDS
 
 /**
  * Load graph and spatial index (cached after first load)
@@ -76,7 +79,7 @@ async function getGraph() {
 /**
  * Check if location is within Oberbayern region
  */
-function isInOberbayern(location) {
+function isInOberbayern(location: { lat: number; lng: number }): boolean {
     return (
         location.lat >= OBERBAYERN_BOUNDS.minLat &&
         location.lat <= OBERBAYERN_BOUNDS.maxLat &&
@@ -88,9 +91,9 @@ function isInOberbayern(location) {
 /**
  * Convert shape name to type for waypoint generation
  */
-function getShapeType(shapeName) {
+function getShapeType(shapeName: string): string | null {
     const normalized = shapeName.toLowerCase().trim()
-    const shapeMap = {
+    const shapeMap: Record<string, string> = {
         heart: 'heart',
         circle: 'circle',
         star: 'star',
@@ -102,7 +105,7 @@ function getShapeType(shapeName) {
 /**
  * API Endpoint for Graph-Based Routing
  */
-export async function POST(req) {
+export async function POST(req: Request) {
     try {
         const { location, shape, targetDistanceKm = 5.0 } = await req.json()
 
@@ -123,8 +126,8 @@ export async function POST(req) {
             return NextResponse.json(
                 {
                     error: 'Location outside supported region',
-                    message: 'Graph-based routing is currently only available in the Oberbayern/Munich region (Bavaria, Germany)',
-                    bounds: OBERBAYERN_BOUNDS,
+                    message: 'Graph-based routing is currently only available in Munich area (20km radius from city center)',
+                    bounds: MUNICH_BOUNDS,
                     yourLocation: location,
                 },
                 { status: 400 }
@@ -168,21 +171,35 @@ export async function POST(req) {
         const radiusMeters = (targetDistanceKm * 1000) / 5
 
         // Generate waypoints for the shape
+        // Use VERY dense waypoints for better shape accuracy (30-50m spacing)
+        // Dense waypoints prevent routing shortcuts across the shape
+        const estimatedPerimeter = targetDistanceKm * 1000 // Rough estimate
+        const waypointCount = Math.max(50, Math.min(300, Math.ceil(estimatedPerimeter / 40)))
+
         const waypoints = generateWaypointsForShape(
-            shapeType,
+            shapeType as 'heart' | 'circle' | 'star' | 'square',
             { lat: location.lat, lng: location.lng },
             radiusMeters,
-            100, // pointCount for smooth shape
-            undefined // auto-calculate waypoint count based on perimeter
+            500, // High point count for smooth shape generation
+            waypointCount // Dense waypoints to follow shape curve closely
         )
 
         console.log(`📍 [GRAPH-ROUTE] Generated ${waypoints.length} waypoints`)
 
         // Route through waypoints
         const routeStart = Date.now()
+
+        // Calculate maximum segment distance based on waypoint spacing
+        // Allow routes up to 2x the expected straight-line distance between waypoints
+        const avgWaypointSpacing = (estimatedPerimeter / waypointCount)
+        const maxSegmentDistance = avgWaypointSpacing * 2.5 // Allow some flexibility for road network
+
+        console.log(`🛣️  [GRAPH-ROUTE] Max segment distance: ${Math.round(maxSegmentDistance)}m`)
+
         const route = routeThroughWaypoints(graph, spatialIndex, waypoints, {
             closeLoop: true,
             skipUnreachable: true,
+            maxSegmentDistance, // Prevent long detours
         })
 
         if (!route) {
@@ -208,11 +225,12 @@ export async function POST(req) {
         const geojson = routeToGeoJSON(route)
 
         // Add additional metadata
+        const actualDistance = stats.totalDistance / 1000 // Convert to km
         geojson.properties = {
             ...geojson.properties,
             targetDistanceKm,
-            actualDistanceKm: stats.totalDistanceKm,
-            distanceAccuracy: Math.abs(stats.totalDistanceKm - targetDistanceKm) / targetDistanceKm,
+            actualDistanceKm: parseFloat(stats.totalDistanceKm),
+            distanceAccuracy: Math.abs(actualDistance - targetDistanceKm) / targetDistanceKm,
             shape: shapeType,
             center: location,
             waypoints: stats.waypoints,
@@ -220,10 +238,10 @@ export async function POST(req) {
             totalNodes: stats.totalNodes,
             routingTimeMs: routeTime,
             method: 'graph-based',
-        }
+        } as any
 
         return NextResponse.json(geojson)
-    } catch (err) {
+    } catch (err: any) {
         console.error('[GRAPH-ROUTE ERROR]', err)
         return NextResponse.json(
             {
@@ -244,16 +262,16 @@ export async function GET() {
     return NextResponse.json({
         service: 'graph-based-routing',
         status: isGraphLoaded ? 'ready' : 'not-loaded',
-        supportedRegion: 'Oberbayern/Munich, Bavaria, Germany',
-        bounds: OBERBAYERN_BOUNDS,
+        supportedRegion: 'Munich, Germany (20km radius)',
+        bounds: MUNICH_BOUNDS,
         supportedShapes: ['heart', 'circle', 'star', 'square'],
         distanceRange: '1-50 km',
-        graphStats: isGraphLoaded
+        graphStats: isGraphLoaded && graphCache
             ? {
                   nodes: graphCache.order,
                   edges: graphCache.size,
               }
             : null,
-        info: 'Graph will be loaded on first route request (takes ~40s)',
+        info: 'Graph will be loaded on first route request (takes ~10-15s for Munich)',
     })
 }

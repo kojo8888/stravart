@@ -30,33 +30,29 @@ async function analyzeConnectivity() {
         console.log(`✅ Analysis complete in ${componentTime.toFixed(2)}s`)
         console.log('')
 
-        // Count component sizes
-        const componentSizes = new Map<number, number>()
-        for (const componentId of Object.values(components)) {
-            componentSizes.set(componentId as number, (componentSizes.get(componentId as number) || 0) + 1)
-        }
-
-        // Sort by size
-        const sortedComponents = Array.from(componentSizes.entries())
-            .sort((a, b) => b[1] - a[1])
+        // components is an array of arrays: [[node1, node2, ...], [node3, node4, ...], ...]
+        // Sort components by size
+        const sortedComponents = components
+            .map((nodes, index) => ({ componentId: index, size: nodes.length }))
+            .sort((a, b) => b.size - a.size)
 
         console.log('📊 Connected Component Statistics:')
-        console.log(`   - Total components: ${sortedComponents.length.toLocaleString()}`)
+        console.log(`   - Total components: ${components.length.toLocaleString()}`)
         console.log(`   - Total nodes: ${graph.order.toLocaleString()}`)
         console.log('')
 
         console.log('🔝 Top 10 largest components:')
         for (let i = 0; i < Math.min(10, sortedComponents.length); i++) {
-            const [componentId, size] = sortedComponents[i]
+            const { componentId, size } = sortedComponents[i]
             const percentage = ((size / graph.order) * 100).toFixed(2)
             console.log(`   ${i + 1}. Component ${componentId}: ${size.toLocaleString()} nodes (${percentage}%)`)
         }
         console.log('')
 
         // Analyze small components
-        const smallComponents = sortedComponents.filter(([_, size]) => size < 10)
-        const mediumComponents = sortedComponents.filter(([_, size]) => size >= 10 && size < 100)
-        const largeComponents = sortedComponents.filter(([_, size]) => size >= 100)
+        const smallComponents = sortedComponents.filter(({ size }) => size < 10)
+        const mediumComponents = sortedComponents.filter(({ size }) => size >= 10 && size < 100)
+        const largeComponents = sortedComponents.filter(({ size }) => size >= 100)
 
         console.log('📈 Component size distribution:')
         console.log(`   - Large (≥100 nodes): ${largeComponents.length.toLocaleString()} components`)
@@ -65,7 +61,7 @@ async function analyzeConnectivity() {
         console.log('')
 
         const largestComponent = sortedComponents[0]
-        const coveragePercent = ((largestComponent[1] / graph.order) * 100).toFixed(2)
+        const coveragePercent = ((largestComponent.size / graph.order) * 100).toFixed(2)
 
         console.log('💡 Insights:')
         console.log(`   - Largest component covers ${coveragePercent}% of the graph`)
