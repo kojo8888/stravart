@@ -6,7 +6,15 @@ import axios from 'axios'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from '@/components/ui/select'
 import DrawingBoard from '@/components/DrawingBoard'
+import { Upload, Shapes, Pencil } from 'lucide-react'
 import { getAvailableShapes } from '@/lib/shapes'
 import { checkPremiumAccess, getRemainingDays } from '@/lib/payment'
 import CheckoutButton from '@/components/CheckoutButton'
@@ -54,7 +62,7 @@ interface ResultData extends FeatureCollection<Geometry> {
 
 const Home: React.FC = () => {
     const [userLocation, setUserLocation] = useState<Coordinates | null>(null)
-    const [shapeType, setShapeType] = useState<'predefined' | 'custom'>('predefined')
+    const [shapeType, setShapeType] = useState<'predefined' | 'upload' | 'custom'>('predefined')
     const [selectedShape, setSelectedShape] = useState<string>('heart')
     const [targetDistance, setTargetDistance] = useState<string>('5.0')
     const [loading, setLoading] = useState(false)
@@ -62,9 +70,12 @@ const Home: React.FC = () => {
     const [searchQuery, setSearchQuery] = useState('')
     const [isSearching, setIsSearching] = useState(false)
     const [customSvg, setCustomSvg] = useState<string | null>(null)
+    const [uploadedSvg, setUploadedSvg] = useState<string | null>(null)
+    const [uploadedFileName, setUploadedFileName] = useState<string | null>(null)
     const [hasPremium, setHasPremium] = useState(false)
     const [remainingDays, setRemainingDays] = useState<number | null>(null)
     const [routeCount, setRouteCount] = useState(0)
+    const fileInputRef = React.useRef<HTMLInputElement>(null)
 
     useEffect(() => {
         // Check premium access status
@@ -137,11 +148,44 @@ const Home: React.FC = () => {
     }
 
 
-    const handleShapeTypeChange = (type: 'predefined' | 'custom') => {
+    const handleShapeTypeChange = (type: 'predefined' | 'upload' | 'custom') => {
         setShapeType(type)
         if (type === 'predefined') {
-            setCustomSvg(null) // Clear custom drawing when switching to predefined
+            setCustomSvg(null)
+            setUploadedSvg(null)
+            setUploadedFileName(null)
+        } else if (type === 'upload') {
+            setCustomSvg(null)
+        } else if (type === 'custom') {
+            setUploadedSvg(null)
+            setUploadedFileName(null)
         }
+    }
+
+    const handleSvgUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0]
+        if (!file) return
+
+        if (!file.name.toLowerCase().endsWith('.svg')) {
+            alert('Please upload an SVG file')
+            return
+        }
+
+        const reader = new FileReader()
+        reader.onload = (e) => {
+            const svgContent = e.target?.result as string
+            setUploadedSvg(svgContent)
+            setUploadedFileName(file.name)
+            setShapeType('upload')
+        }
+        reader.onerror = () => {
+            alert('Error reading file')
+        }
+        reader.readAsText(file)
+    }
+
+    const handleUploadClick = () => {
+        fileInputRef.current?.click()
     }
 
     const handleDistanceChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -155,7 +199,12 @@ const Home: React.FC = () => {
         }
 
         if (shapeType === 'custom' && !customSvg) {
-            alert('Please draw a custom shape or switch to heart shape.')
+            alert('Please draw a custom shape first.')
+            return
+        }
+
+        if (shapeType === 'upload' && !uploadedSvg) {
+            alert('Please upload an SVG file first.')
             return
         }
 
@@ -184,11 +233,14 @@ const Home: React.FC = () => {
                 console.log('[FRONTEND] Munich + predefined shape - using curve-following router for rideable route')
             }
 
+            // Determine which SVG to use based on shape type
+            const svgToUse = shapeType === 'upload' ? uploadedSvg : customSvg
+
             const response = await axios.post(endpoint, {
                 location: userLocation,
                 targetDistanceKm: parseFloat(targetDistance) || 5.0,
                 shape: shapeType === 'predefined' ? selectedShape : 'custom',
-                svg: customSvg,
+                svg: svgToUse,
             })
             console.log('[FRONTEND] Response from backend:', response.data)
             setResult(response.data)
@@ -385,45 +437,64 @@ const Home: React.FC = () => {
                             <span className="w-8 h-8 bg-blue-500 text-white rounded-full flex items-center justify-center text-sm font-bold">3</span>
                             <h2 className="text-xl font-semibold">Choose Shape</h2>
                         </div>
-                        
-                        {/* Shape Type Selection */}
+
+                        {/* Shape Type Selection - Three Main Buttons */}
                         <div className="space-y-4">
-                            <div className="flex gap-4">
+                            <div className="grid grid-cols-3 gap-2">
                                 <Button
                                     onClick={() => handleShapeTypeChange('predefined')}
                                     variant={shapeType === 'predefined' ? 'default' : 'outline'}
-                                    className="flex-1"
+                                    className="flex flex-col gap-1 h-auto py-3"
                                 >
-                                    🎯 Choose Shape
+                                    <Shapes className="h-5 w-5" />
+                                    <span className="text-sm">Choose Shape</span>
+                                </Button>
+                                <Button
+                                    onClick={handleUploadClick}
+                                    variant={shapeType === 'upload' ? 'default' : 'outline'}
+                                    className="flex flex-col gap-1 h-auto py-3"
+                                >
+                                    <Upload className="h-5 w-5" />
+                                    <span className="text-sm">Upload SVG</span>
                                 </Button>
                                 <Button
                                     onClick={() => handleShapeTypeChange('custom')}
                                     variant={shapeType === 'custom' ? 'default' : 'outline'}
-                                    className="flex-1"
+                                    className="flex flex-col gap-1 h-auto py-3"
                                 >
-                                    ✏️ Draw Custom
+                                    <Pencil className="h-5 w-5" />
+                                    <span className="text-sm">Draw Custom</span>
                                 </Button>
                             </div>
-                            
-                            {/* Predefined Shapes */}
+
+                            {/* Hidden file input for SVG upload */}
+                            <input
+                                ref={fileInputRef}
+                                type="file"
+                                accept=".svg"
+                                onChange={handleSvgUpload}
+                                className="hidden"
+                            />
+
+                            {/* Predefined Shapes - Dropdown */}
                             {shapeType === 'predefined' && (
                                 <div className="space-y-3">
-                                    <p className="text-gray-600">Select a shape:</p>
-                                    <div className="grid grid-cols-2 gap-2">
-                                        {getAvailableShapes().map((shape) => (
-                                            <Button
-                                                key={shape.name}
-                                                onClick={() => setSelectedShape(shape.name)}
-                                                variant={selectedShape === shape.name ? 'default' : 'outline'}
-                                                className="h-auto p-3 flex flex-col gap-1"
-                                            >
-                                                <span className="text-lg">{shape.displayName}</span>
-                                                <span className="text-xs text-gray-600 text-center">
-                                                    {shape.description}
-                                                </span>
-                                            </Button>
-                                        ))}
-                                    </div>
+                                    <p className="text-gray-600 text-sm">Select a predefined shape:</p>
+                                    <Select value={selectedShape} onValueChange={setSelectedShape}>
+                                        <SelectTrigger className="w-full">
+                                            <SelectValue placeholder="Select a shape" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {getAvailableShapes().map((shape) => (
+                                                <SelectItem key={shape.name} value={shape.name}>
+                                                    <div className="flex items-center gap-2">
+                                                        <span>{shape.displayName}</span>
+                                                        <span className="text-xs text-gray-500">- {shape.description}</span>
+                                                    </div>
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
                                     <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
                                         <p className="text-blue-800 text-sm text-center">
                                             {getAvailableShapes().find(s => s.name === selectedShape)?.displayName} selected
@@ -431,11 +502,36 @@ const Home: React.FC = () => {
                                     </div>
                                 </div>
                             )}
-                            
+
+                            {/* Upload SVG */}
+                            {shapeType === 'upload' && (
+                                <div className="space-y-3">
+                                    <p className="text-gray-600 text-sm">Upload an SVG file with a single closed path:</p>
+                                    <Button
+                                        onClick={handleUploadClick}
+                                        variant="outline"
+                                        className="w-full border-dashed border-2 h-24 flex flex-col gap-2"
+                                    >
+                                        <Upload className="h-6 w-6 text-gray-400" />
+                                        <span className="text-gray-600">Click to upload SVG file</span>
+                                    </Button>
+                                    {uploadedSvg && uploadedFileName && (
+                                        <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+                                            <p className="text-green-700 text-sm">
+                                                ✓ Uploaded: <strong>{uploadedFileName}</strong>
+                                            </p>
+                                        </div>
+                                    )}
+                                    <p className="text-xs text-gray-500">
+                                        Tip: Create SVGs with tools like Figma, Inkscape, or Illustrator. Use a single closed path for best results.
+                                    </p>
+                                </div>
+                            )}
+
                             {/* Custom Drawing */}
                             {shapeType === 'custom' && (
                                 <div className="space-y-3">
-                                    <p className="text-gray-600">Draw your custom shape:</p>
+                                    <p className="text-gray-600 text-sm">Draw your custom shape:</p>
                                     <DrawingBoard
                                         onSvgGenerated={(svg) => {
                                             console.log('Generated SVG', svg)
@@ -460,7 +556,7 @@ const Home: React.FC = () => {
                             onClick={handleFetch} 
                             size="lg"
                             className="px-8"
-                            disabled={!userLocation || (shapeType === 'custom' && !customSvg) || (!hasPremium && routeCount >= 1000)}
+                            disabled={!userLocation || (shapeType === 'custom' && !customSvg) || (shapeType === 'upload' && !uploadedSvg) || (!hasPremium && routeCount >= 1000)}
                         >
                             {!hasPremium && routeCount >= 1000 ? '🔒 Upgrade Required' : '🚀 Generate Route'}
                         </Button>

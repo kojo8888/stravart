@@ -3,6 +3,7 @@ import RBush from 'rbush'
 import knn from 'rbush-knn'
 import distance from '@turf/distance'
 import { generateShapePoints, normalizeShape, getShape } from '@/lib/shapes'
+import { svgToPoints, normalizePoints as normalizeSvgPoints } from '@/lib/svg-parser'
 import fs from 'fs'
 import path from 'path'
 
@@ -16,116 +17,56 @@ const FIXTURE_PATH = path.join(process.cwd(), 'fixtures/munich-streets.geojson')
 // ========================================
 
 // --- SVG Handling ---
-const parseSvgPathsAndPolylines = (svgString) => {
-    const pathRegex = /<path[^>]*d="([^"]+)"[^>]*>/g
-    const polylineRegex = /<polyline[^>]*points="([^"]+)"[^>]*>/g
 
-    const allPoints = []
+/**
+ * Convert SVG points (x, y) to geographic coordinates (lat, lng)
+ * Centers the shape at the given location and scales to the radius
+ */
+const convertSvgPointsToLatLng = (points, center, radiusMeters) => {
+    if (points.length === 0) return []
 
-    let match
-    while ((match = pathRegex.exec(svgString)) !== null) {
-        const d = match[1]
-        const points = parseSvgPath(d)
-        allPoints.push(...points)
-    }
+    // First normalize the points to be centered at origin with unit scale
+    const normalized = normalizeSvgPoints(points)
 
-    while ((match = polylineRegex.exec(svgString)) !== null) {
-        const pointsStr = match[1].trim()
-        const points = pointsStr.split(/\s+/).map((pair) => {
-            const [x, y] = pair.split(',').map(Number)
-            return { x, y }
-        })
-        allPoints.push(...points)
-    }
+    // Convert normalized coordinates to lat/lng
+    // Scale factor: radiusMeters determines how large the shape will be
+    const metersPerDegreeLat = 111320
+    const metersPerDegreeLng = 40075000 * Math.cos((center.lat * Math.PI) / 180) / 360
 
-    return allPoints
-}
-
-const parseSvgPath = (svgPath) => {
-    const regex = /[ML]\s*(-?\d+\.?\d*)\s*(-?\d+\.?\d*)/g
-    let match
-    const points = []
-
-    while ((match = regex.exec(svgPath)) !== null) {
-        const x = parseFloat(match[1])
-        const y = parseFloat(match[2])
-        points.push({ x, y })
-    }
-
-    return points
-}
-
-const normalizePoints = (points, center, radiusMeters) => {
-    const maxX = Math.max(...points.map((p) => p.x))
-    const maxY = Math.max(...points.map((p) => p.y))
-    const scale = radiusMeters / Math.max(maxX, maxY)
-
-    return points.map((p) => {
-        const latOffset = (p.y * scale) / 111320
-        const lngOffset =
-            (p.x * scale) /
-            ((40075000 * Math.cos((center.lat * Math.PI) / 180)) / 360)
-        return { lat: center.lat + latOffset, lng: center.lng + lngOffset }
+    return normalized.map((p) => {
+        // Note: SVG y-axis is typically inverted (positive down)
+        // We negate y to flip the shape right-side up
+        const latOffset = (-p.y * radiusMeters) / metersPerDegreeLat
+        const lngOffset = (p.x * radiusMeters) / metersPerDegreeLng
+        return {
+            lat: center.lat + latOffset,
+            lng: center.lng + lngOffset
+        }
     })
 }
 
-const simplifyRDP = (points, epsilon = 0.0002) => {
-    if (points.length < 3) return points
+/**
+ * Process SVG string into lat/lng points using the new comprehensive parser
+ */
+const convertSvgToLatLngPoints = (svgString, center, radius, numPoints = 80) => {
+    console.log('[SVG] Processing SVG with new parser...')
 
-    const getSqSegDist = (p, p1, p2) => {
-        let x = p1.lng,
-            y = p1.lat
-        let dx = p2.lng - x,
-            dy = p2.lat - y
+    // Use the new comprehensive SVG parser
+    const svgPoints = svgToPoints(svgString, {
+        numPoints: numPoints,
+        curveSamples: 20,
+        closePath: true
+    })
 
-        if (dx !== 0 || dy !== 0) {
-            const t =
-                ((p.lng - x) * dx + (p.lat - y) * dy) / (dx * dx + dy * dy)
-            if (t > 1) {
-                x = p2.lng
-                y = p2.lat
-            } else if (t > 0) {
-                x += dx * t
-                y += dy * t
-            }
-        }
-
-        dx = p.lng - x
-        dy = p.lat - y
-        return dx * dx + dy * dy
+    if (svgPoints.length === 0) {
+        console.warn('[SVG] No points extracted from SVG')
+        return []
     }
 
-    const simplifyStep = (pts, first, last, eps, simplified) => {
-        let maxDist = 0
-        let index = first
+    console.log(`[SVG] Extracted ${svgPoints.length} points, converting to lat/lng...`)
 
-        for (let i = first + 1; i < last; i++) {
-            const dist = getSqSegDist(pts[i], pts[first], pts[last])
-            if (dist > maxDist) {
-                index = i
-                maxDist = dist
-            }
-        }
-
-        if (maxDist > eps * eps) {
-            if (index - first > 1)
-                simplifyStep(pts, first, index, eps, simplified)
-            simplified.push(pts[index])
-            if (last - index > 1)
-                simplifyStep(pts, index, last, eps, simplified)
-        }
-    }
-
-    const simplified = [points[0]]
-    simplifyStep(points, 0, points.length - 1, epsilon, simplified)
-    simplified.push(points[points.length - 1])
-    return simplified
-}
-
-const convertSvgToLatLngPoints = (svgString, center, radius) => {
-    const allPoints = parseSvgPathsAndPolylines(svgString)
-    if (allPoints.length === 0) return []
-    return normalizePoints(allPoints, center, radius)
+    // Convert to lat/lng coordinates
+    return convertSvgPointsToLatLng(svgPoints, center, radius)
 }
 
 // --- Overpass + Fitting ---
@@ -241,6 +182,40 @@ function calculateRouteDistance(coordinates) {
 
 // --- Shape Optimization ---
 
+// Build spatial index once for fast nearest-neighbor queries
+let cachedSpatialIndex = null
+let cachedNodesHash = null
+
+function buildSpatialIndex(rawNodes) {
+    // Create a simple hash to detect if nodes changed
+    const nodesHash = rawNodes.length
+
+    if (cachedSpatialIndex && cachedNodesHash === nodesHash) {
+        return cachedSpatialIndex
+    }
+
+    console.log('[Optimization] Building spatial index for', rawNodes.length, 'nodes...')
+    const startTime = Date.now()
+
+    const items = rawNodes.map(([lon, lat]) => ({
+        minX: lon,
+        minY: lat,
+        maxX: lon,
+        maxY: lat,
+        lon,
+        lat,
+    }))
+
+    const index = new RBush()
+    index.load(items)
+
+    cachedSpatialIndex = index
+    cachedNodesHash = nodesHash
+
+    console.log(`[Optimization] Spatial index built in ${Date.now() - startTime}ms`)
+    return index
+}
+
 function transformShape(shape, [scale, theta, tx, ty]) {
     const cos = Math.cos(theta)
     const sin = Math.sin(theta)
@@ -250,10 +225,40 @@ function transformShape(shape, [scale, theta, tx, ty]) {
     ])
 }
 
+function costFunctionWithIndex(params, shape, spatialIndex, targetDistanceKm = null, rawNodes = null) {
+    const transformed = transformShape(shape, params)
+
+    // Cost 1: Distance to nearest street nodes using spatial index (O(log n) per point)
+    let shapeFitCost = 0
+    for (const [x, y] of transformed) {
+        // Use KNN to find nearest node - much faster than brute force
+        const [nearest] = knn(spatialIndex, x, y, 1)
+        if (nearest) {
+            const dx = x - nearest.lon
+            const dy = y - nearest.lat
+            shapeFitCost += dx * dx + dy * dy
+        } else {
+            shapeFitCost += 1 // Penalty if no node found
+        }
+    }
+
+    // Cost 2: Distance from target distance (if specified)
+    // Note: Only check distance occasionally to save computation
+    let distanceCost = 0
+    if (targetDistanceKm && rawNodes) {
+        const snapped = snapPointsToNodes(transformed, rawNodes)
+        const actualDistance = calculateRouteDistance(snapped)
+        const distanceError = Math.abs(actualDistance - targetDistanceKm) / targetDistanceKm
+        distanceCost = distanceError * 1000
+    }
+
+    return shapeFitCost + distanceCost
+}
+
+// Legacy cost function for backward compatibility (not used for SVG)
 function costFunction(params, shape, coords, targetDistanceKm = null) {
     const transformed = transformShape(shape, params)
-    
-    // Cost 1: Distance to nearest street nodes (shape fitting)
+
     let shapeFitCost = 0
     for (const [x, y] of transformed) {
         let min = Infinity
@@ -265,16 +270,15 @@ function costFunction(params, shape, coords, targetDistanceKm = null) {
         }
         shapeFitCost += min
     }
-    
-    // Cost 2: Distance from target distance (if specified)
+
     let distanceCost = 0
     if (targetDistanceKm) {
         const snapped = snapPointsToNodes(transformed, coords)
         const actualDistance = calculateRouteDistance(snapped)
         const distanceError = Math.abs(actualDistance - targetDistanceKm) / targetDistanceKm
-        distanceCost = distanceError * 1000 // Weight distance accuracy heavily
+        distanceCost = distanceError * 1000
     }
-    
+
     return shapeFitCost + distanceCost
 }
 
@@ -398,30 +402,41 @@ async function fitShapeToStreets(shapeName, location, rawNodes, targetDistanceKm
 }
 
 async function fitSvgToStreets(svgPoints, location, rawNodes, targetDistanceKm = 5.0) {
+    console.log('[fitSvgToStreets] Starting optimization...')
+    const startTime = Date.now()
+
+    // Build spatial index for fast nearest-neighbor queries
+    const spatialIndex = buildSpatialIndex(rawNodes)
+
     // Convert SVG points to [x, y] tuples and normalize
     const normalizedSvg = normalizeShape(svgPoints.map(p => [p.lng, p.lat]))
     const degreesPerMeter = 1 / 111000
-    
+
     // Estimate perimeter ratio for SVG (similar to other shapes)
-    const estimatedPerimeterRatio = 6.0 // Default estimation for custom shapes
+    const estimatedPerimeterRatio = 6.0
     const estimatedScale = (targetDistanceKm * 1000 / estimatedPerimeterRatio) * degreesPerMeter
     const initialParams = [estimatedScale, 0, location.lng, location.lat]
 
+    // First pass: optimize shape fit only (no distance calculation - much faster)
+    console.log('[fitSvgToStreets] Phase 1: Shape fitting optimization...')
     let result = nelderMead(
-        (params) => costFunction(params, normalizedSvg, rawNodes, targetDistanceKm),
+        (params) => costFunctionWithIndex(params, normalizedSvg, spatialIndex, null, null),
         initialParams,
-        200
+        100  // Reduced iterations since we're not checking distance
     )
 
-    // Iterative refinement to get closer to target distance (within 20%)
+    // Second pass: refine with distance targeting
+    console.log('[fitSvgToStreets] Phase 2: Distance refinement...')
     let attempts = 0
-    const maxAttempts = 3
-    
+    const maxAttempts = 2  // Reduced from 3
+
     while (attempts < maxAttempts) {
         const transformed = transformShape(normalizedSvg, result.x)
         const snapped = snapPointsToNodes(transformed, rawNodes)
         const actualDistance = calculateRouteDistance(snapped)
         const distanceError = Math.abs(actualDistance - targetDistanceKm) / targetDistanceKm
+
+        console.log(`[fitSvgToStreets] Attempt ${attempts + 1}: distance=${actualDistance.toFixed(2)}km, error=${(distanceError * 100).toFixed(1)}%`)
         
         // If within 20% tolerance, we're done
         if (distanceError <= 0.2) break
@@ -430,20 +445,22 @@ async function fitSvgToStreets(svgPoints, location, rawNodes, targetDistanceKm =
         const scaleAdjustment = targetDistanceKm / actualDistance
         const adjustedParams = [...result.x]
         adjustedParams[0] *= scaleAdjustment
-        
-        // Run optimization again with adjusted starting point
+
+        // Run optimization again with adjusted starting point (using indexed cost function)
         result = nelderMead(
-            (params) => costFunction(params, normalizedSvg, rawNodes, targetDistanceKm),
+            (params) => costFunctionWithIndex(params, normalizedSvg, spatialIndex, null, null),
             adjustedParams,
-            150
+            50  // Fewer iterations for refinement
         )
-        
+
         attempts++
     }
 
     const transformed = transformShape(normalizedSvg, result.x)
     const snapped = snapPointsToNodes(transformed, rawNodes)
     const totalDistance = calculateRouteDistance(snapped)
+
+    console.log(`[fitSvgToStreets] Completed in ${Date.now() - startTime}ms, final distance: ${totalDistance.toFixed(2)}km`)
 
     return {
         type: 'FeatureCollection',
@@ -483,13 +500,23 @@ export async function POST(req) {
         const nodes = await fetchStreetNodes(location, radius)
 
         if (svg && shape?.toLowerCase() === 'custom') {
-            // Convert SVG to lat/lng points with basic scaling for initial processing
-            const svgRadius = targetDistanceKm * 1000 / 6 // Better initial estimation
-            const coords = convertSvgToLatLngPoints(svg, location, svgRadius)
-            const simplified = simplifyRDP(coords, 0.0002)
-            
-            // Use the new optimization-based fitting for SVG
-            const result = await fitSvgToStreets(simplified, location, nodes, targetDistanceKm)
+            console.log('[API] Processing custom SVG shape...')
+
+            // Use improved SVG parser with proper curve handling and RDP simplification
+            // The new parser handles: all SVG commands, bezier curves, arcs, and auto-simplification
+            const svgRadius = targetDistanceKm * 1000 / 6 // Initial scale estimate
+
+            // Parse SVG with 80 evenly-spaced points (RDP + resampling built-in)
+            const coords = convertSvgToLatLngPoints(svg, location, svgRadius, 80)
+
+            if (coords.length === 0) {
+                throw new Error('Could not extract points from SVG. Ensure SVG contains valid path elements.')
+            }
+
+            console.log(`[API] SVG parsed: ${coords.length} points ready for optimization`)
+
+            // Use optimization-based fitting for SVG
+            const result = await fitSvgToStreets(coords, location, nodes, targetDistanceKm)
             return NextResponse.json(result)
         }
 

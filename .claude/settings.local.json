@@ -32,7 +32,8 @@
       "Bash(pkill:*)",
       "Bash(xargs kill -9)",
       "Bash(__NEW_LINE_e38be29d7c98d28a__ echo \"=== COMPARISON ===\")",
-      "Bash(__NEW_LINE_e38be29d7c98d28a__ echo \"\")"
+      "Bash(__NEW_LINE_e38be29d7c98d28a__ echo \"\")",
+      "mcp__ide__getDiagnostics"
     ],
     "deny": []
   },
