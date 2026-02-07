@@ -44,12 +44,20 @@ interface ResultData extends FeatureCollection<Geometry> {
         nodeCount?: number
         routingTimeMs?: number
         graphLoadTimeMs?: number
+        optimizationTimeMs?: number
         method?: string
         shape?: string
         radiusMeters?: number
         corridorWidth?: number
         directionPenalty?: number
         distanceError?: string
+        // Optimized route properties
+        optimizedScale?: number
+        optimizedRotation?: string
+        optimizedCenter?: { lat: number; lng: number }
+        avgSnapDistance?: number
+        maxSnapDistance?: number
+        waypointCount?: number
         connectivity?: {
             connectedPoints: number
             totalPoints: number
@@ -217,20 +225,20 @@ const Home: React.FC = () => {
 
         setLoading(true)
         try {
-            // Check if location is in Munich area for curve-following routing
+            // Check if location is in Munich area for optimized routing
             // Munich bounds: 20km radius from city center
             const inMunich =
                 userLocation.lat >= 47.9549 && userLocation.lat <= 48.3153 &&
                 userLocation.lng >= 11.3120 && userLocation.lng <= 11.8520
 
-            // Use curve-following router for Munich (predefined shapes only)
-            // This creates actual rideable routes that follow the shape outline
-            const useCurveRouter = inMunich && shapeType === 'predefined'
-            const endpoint = useCurveRouter ? '/api/shape-route' : '/api/fit-fetch'
+            // Use optimized router for Munich (predefined shapes only)
+            // This combines Nelder-Mead optimization + A* routing for best results
+            const useOptimizedRouter = inMunich && shapeType === 'predefined'
+            const endpoint = useOptimizedRouter ? '/api/optimized-route' : '/api/fit-fetch'
 
-            console.log(`[FRONTEND] Using ${useCurveRouter ? 'curve-following' : 'optimization'} routing (${endpoint})`)
-            if (useCurveRouter) {
-                console.log('[FRONTEND] Munich + predefined shape - using curve-following router for rideable route')
+            console.log(`[FRONTEND] Using ${useOptimizedRouter ? 'optimized (Nelder-Mead + A*)' : 'optimization-only'} routing (${endpoint})`)
+            if (useOptimizedRouter) {
+                console.log('[FRONTEND] Munich + predefined shape - using hybrid optimized router')
             }
 
             // Determine which SVG to use based on shape type
@@ -423,12 +431,12 @@ const Home: React.FC = () => {
                             value={targetDistance}
                             onChange={handleDistanceChange}
                             type="number"
-                            step="0.1"
+                            step="0.5"
                             min="1.0"
-                            max="20.0"
+                            max="60.0"
                             className="text-lg"
                         />
-                        <p className="text-sm text-gray-500 mt-2">Distance in kilometers (1.0 - 20.0)</p>
+                        <p className="text-sm text-gray-500 mt-2">Distance in kilometers (1.0 - 60.0)</p>
                     </div>
 
                     {/* Step 3: Shape */}
@@ -601,10 +609,10 @@ const Home: React.FC = () => {
                                         🎯 Route Distance: <strong>{result.properties.actualDistanceKm || result.properties.totalDistanceKm} km</strong>
                                     </p>
 
-                                    {/* Curve-following route info */}
-                                    {result.properties.method === 'curve-following' && (
+                                    {/* Optimized curve-following route info */}
+                                    {(result.properties.method === 'optimized-curve-following' || result.properties.method === 'curve-following') && (
                                         <div className="mt-3 space-y-2">
-                                            <div className="flex items-center justify-center gap-2">
+                                            <div className="flex items-center justify-center gap-2 flex-wrap">
                                                 <span className="px-2 py-1 bg-green-100 text-green-800 text-xs font-medium rounded-full">
                                                     ✅ Rideable Route
                                                 </span>
@@ -615,8 +623,16 @@ const Home: React.FC = () => {
                                                     {result.properties.nodeCount} nodes
                                                 </span>
                                             </div>
+
+                                            {/* Optimization info */}
+                                            {result.properties.method === 'optimized-curve-following' && result.properties.optimizedRotation && (
+                                                <p className="text-sm text-gray-600">
+                                                    🎯 Optimized: {result.properties.optimizedRotation} rotation • {result.properties.avgSnapDistance}m avg snap
+                                                </p>
+                                            )}
+
                                             <p className="text-sm text-gray-600">
-                                                🛣️ Curve-following A* • {result.properties.corridorWidth}m corridor
+                                                🛣️ {result.properties.method === 'optimized-curve-following' ? 'Nelder-Mead + A*' : 'Curve-following A*'} • {result.properties.corridorWidth}m corridor
                                             </p>
                                             {result.properties.distanceError && (
                                                 <p className="text-xs text-gray-500">
@@ -626,6 +642,7 @@ const Home: React.FC = () => {
                                             {result.properties.routingTimeMs && (
                                                 <p className="text-xs text-gray-400">
                                                     Routed in {result.properties.routingTimeMs}ms
+                                                    {result.properties.optimizationTimeMs && ` (${result.properties.optimizationTimeMs}ms optimization)`}
                                                 </p>
                                             )}
                                         </div>

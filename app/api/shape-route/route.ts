@@ -149,6 +149,91 @@ function calculateRadius(targetDistanceKm: number, shapeType: string): number {
 }
 
 /**
+ * Quality assessment for generated routes
+ * Returns array of issues found (empty if route is good)
+ */
+interface RoutePath {
+    coordinates: { lat: number; lng: number }[]
+    distance: number
+}
+
+function assessRouteQuality(
+    segments: RoutePath[],
+    targetDistanceKm: number,
+    waypointCount: number
+): string[] {
+    const issues: string[] = []
+
+    if (!segments || segments.length === 0) {
+        issues.push('no-route')
+        return issues
+    }
+
+    // Calculate total distance
+    const totalDistanceKm = segments.reduce((sum, s) => sum + s.distance, 0) / 1000
+
+    // Issue 1: Distance variance too high (>50%)
+    const distanceError = Math.abs(totalDistanceKm - targetDistanceKm) / targetDistanceKm
+    if (distanceError > 0.5) {
+        issues.push('distance-variance')
+    }
+
+    // Issue 2: Not all segments completed (incomplete loop)
+    if (segments.length < waypointCount * 0.9) {
+        issues.push('incomplete-loop')
+    }
+
+    // Issue 3: Check for double-walled segments (parallel nearby paths)
+    // Sample coordinates and check for clustering
+    const allCoords: { lat: number; lng: number }[] = []
+    for (const seg of segments) {
+        allCoords.push(...seg.coordinates)
+    }
+
+    // Grid-based density check
+    const gridSize = 0.0005 // ~50m grid cells
+    const grid = new Map<string, number>()
+    for (const coord of allCoords) {
+        const key = `${Math.floor(coord.lat / gridSize)},${Math.floor(coord.lng / gridSize)}`
+        grid.set(key, (grid.get(key) || 0) + 1)
+    }
+
+    // If many cells have high density, likely double-walled
+    const highDensityCells = Array.from(grid.values()).filter(count => count > 10).length
+    if (highDensityCells > allCoords.length * 0.05) {
+        issues.push('double-walled')
+    }
+
+    // Issue 4: Check for sketchy/jagged paths (many sharp turns)
+    let sharpTurns = 0
+    for (const seg of segments) {
+        for (let i = 2; i < seg.coordinates.length; i++) {
+            const p1 = seg.coordinates[i - 2]
+            const p2 = seg.coordinates[i - 1]
+            const p3 = seg.coordinates[i]
+
+            // Calculate angle between segments
+            const angle1 = Math.atan2(p2.lat - p1.lat, p2.lng - p1.lng)
+            const angle2 = Math.atan2(p3.lat - p2.lat, p3.lng - p2.lng)
+            let angleDiff = Math.abs(angle1 - angle2)
+            if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff
+
+            // Sharp turn if angle > 90 degrees
+            if (angleDiff > Math.PI / 2) {
+                sharpTurns++
+            }
+        }
+    }
+
+    // If more than 10% of points have sharp turns, it's sketchy
+    if (sharpTurns > allCoords.length * 0.10) {
+        issues.push('sketchy')
+    }
+
+    return issues
+}
+
+/**
  * API Endpoint for Shape-Based Routing
  */
 export async function POST(req: Request) {
@@ -201,12 +286,12 @@ export async function POST(req: Request) {
             )
         }
 
-        // Validate target distance
-        if (targetDistanceKm < 1 || targetDistanceKm > 30) {
+        // Validate target distance (extended to 60km)
+        if (targetDistanceKm < 1 || targetDistanceKm > 60) {
             return NextResponse.json(
                 {
                     error: 'Invalid target distance',
-                    message: 'Target distance must be between 1 and 30 km',
+                    message: 'Target distance must be between 1 and 60 km',
                 },
                 { status: 400 }
             )
@@ -215,14 +300,32 @@ export async function POST(req: Request) {
         // Calculate radius from target distance
         const radiusMeters = calculateRadius(targetDistanceKm, shapeType)
 
-        // Calculate corridor width as fraction of radius (default 20%)
-        // This ensures corridor doesn't overlap with itself on tight curves
-        const corridorWidth = Math.round(radiusMeters * corridorWidthRatio)
+        // Calculate corridor width - CAP at maximum to prevent wide corridors on large shapes
+        const MAX_CORRIDOR_WIDTH = 200  // meters - keeps paths tight
+        const MIN_CORRIDOR_WIDTH = 80   // meters - minimum for street density
+        const calculatedCorridor = radiusMeters * corridorWidthRatio
+        const corridorWidth = Math.round(
+            Math.min(MAX_CORRIDOR_WIDTH, Math.max(MIN_CORRIDOR_WIDTH, calculatedCorridor))
+        )
+
+        // Adaptive waypoint count - fewer waypoints = smoother curves, let routing do the work
+        // Using 1.5 waypoints per km instead of 4 to reduce forced detours
+        const adaptiveWaypointCount = Math.max(
+            20,  // Minimum 20 waypoints to define shape
+            Math.min(
+                waypointCount,
+                Math.round(targetDistanceKm * 1.5)  // 1.5 waypoints per km
+            )
+        )
+
+        // Adaptive direction penalty for longer routes
+        const adaptiveDirectionPenalty = Math.min(0.9, directionPenalty + (targetDistanceKm / 100))
 
         console.log(
             `🎨 [SHAPE-ROUTE] Creating ${shapeType} at (${location.lat.toFixed(4)}, ${location.lng.toFixed(4)})`
         )
-        console.log(`   Target: ${targetDistanceKm}km, Radius: ${radiusMeters.toFixed(0)}m, Corridor: ${corridorWidth}m, Penalty: ${directionPenalty}`)
+        console.log(`   Target: ${targetDistanceKm}km, Radius: ${radiusMeters.toFixed(0)}m`)
+        console.log(`   Corridor: ${corridorWidth}m (capped), Waypoints: ${adaptiveWaypointCount}, Penalty: ${adaptiveDirectionPenalty.toFixed(2)}`)
 
         // Load graph (cached after first request)
         const graphStart = Date.now()
@@ -237,13 +340,13 @@ export async function POST(req: Request) {
             200  // Dense points for accurate corridor/direction
         ).map(wp => ({ lat: wp.lat, lng: wp.lng }))
 
-        // Generate sparser waypoints for actual routing
+        // Generate waypoints for actual routing (adaptive count based on distance)
         const waypoints = generateWaypointsForShape(
             shapeType,
             { lat: location.lat, lng: location.lng },
             radiusMeters,
             100,
-            waypointCount
+            adaptiveWaypointCount
         ).map(wp => ({ lat: wp.lat, lng: wp.lng }))
 
         console.log(`   Generated ${waypoints.length} waypoints, ${shapePoints.length} shape points`)
@@ -258,7 +361,7 @@ export async function POST(req: Request) {
             (coord) => spatialIndex.findNearest(coord),
             {
                 corridorWidth,
-                directionPenalty,
+                directionPenalty: adaptiveDirectionPenalty,
                 closeLoop: true,
             }
         )
@@ -288,9 +391,24 @@ export async function POST(req: Request) {
         const actualDistanceKm = parseFloat(geojson.properties.totalDistanceKm)
         const distanceError = Math.abs(actualDistanceKm - targetDistanceKm) / targetDistanceKm
 
-        // Add metadata
+        // Add waypoints as Point features for debugging visualization
+        const waypointFeatures = waypoints.map((wp, index) => ({
+            type: 'Feature' as const,
+            properties: {
+                type: 'waypoint',
+                index: index,
+                label: `WP ${index + 1}`,
+            },
+            geometry: {
+                type: 'Point' as const,
+                coordinates: [wp.lng, wp.lat]
+            }
+        }))
+
+        // Add metadata and include waypoint markers
         const result = {
             ...geojson,
+            features: [...geojson.features, ...waypointFeatures],
             properties: {
                 ...geojson.properties,
                 shape: shapeType,
@@ -300,7 +418,7 @@ export async function POST(req: Request) {
                 distanceError: `${(distanceError * 100).toFixed(1)}%`,
                 radiusMeters: Math.round(radiusMeters),
                 corridorWidth,
-                directionPenalty,
+                directionPenalty: adaptiveDirectionPenalty,
                 waypointCount: waypoints.length,
                 graphLoadTimeMs: graphTime,
                 routingTimeMs: routeTime,
@@ -342,7 +460,7 @@ export async function GET() {
         parameters: {
             location: { type: 'object', required: true, example: { lat: 48.1351, lng: 11.5820 } },
             shape: { type: 'string', required: true, example: 'heart' },
-            targetDistanceKm: { type: 'number', default: 5, range: '1-30' },
+            targetDistanceKm: { type: 'number', default: 5, range: '1-60' },
             corridorWidth: { type: 'number', default: 250, description: 'Width of routing corridor in meters' },
             directionPenalty: { type: 'number', default: 0.5, range: '0-1', description: 'Penalty for deviating from shape direction' },
             waypointCount: { type: 'number', default: 40, description: 'Number of waypoints around the shape' },

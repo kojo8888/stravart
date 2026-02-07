@@ -57,6 +57,29 @@ export default function GeoMap({ center, geojsonData }: GeoMapProps) {
                         }
                     }}
                     pointToLayer={(feature, latlng) => {
+                        // Check if this is a waypoint marker for debugging
+                        if (feature?.properties?.type === 'waypoint') {
+                            const index = feature.properties.index
+                            const isFirst = index === 0
+                            // Create red circle - larger for first waypoint
+                            const marker = L.circleMarker(latlng, {
+                                radius: isFirst ? 12 : 8,
+                                fillColor: isFirst ? '#16a34a' : '#dc2626', // Green for start, red for others
+                                color: '#ffffff',
+                                weight: 2,
+                                opacity: 1,
+                                fillOpacity: 0.9
+                            })
+                            // Bind popup showing waypoint index (click to see)
+                            marker.bindPopup(`Waypoint ${index + 1}`)
+                            // Tooltip on hover
+                            marker.bindTooltip(`#${index + 1}`, {
+                                direction: 'top',
+                                offset: [0, -8]
+                            })
+                            return marker
+                        }
+                        // Default point style (for optimization-based API)
                         return L.circleMarker(latlng, {
                             radius: 4,
                             fillColor: '#ff0000',

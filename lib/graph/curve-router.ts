@@ -342,6 +342,67 @@ function reconstructPath(
 }
 
 /**
+ * Unconstrained A* routing (fallback when corridor routing fails)
+ * No corridor or direction constraints - just find any path
+ */
+export function findUnconstrainedRoute(
+    graph: StreetGraph,
+    startNodeId: string,
+    endNodeId: string
+): RoutePath | null {
+    const openSet = new PriorityQueue<string>()
+    const cameFrom = new Map<string, string>()
+    const gScore = new Map<string, number>()
+    const fScore = new Map<string, number>()
+
+    const startAttrs = graph.getNodeAttributes(startNodeId)
+    const endAttrs = graph.getNodeAttributes(endNodeId)
+    const startCoord = { lat: startAttrs.lat, lng: startAttrs.lng }
+    const endCoord = { lat: endAttrs.lat, lng: endAttrs.lng }
+
+    gScore.set(startNodeId, 0)
+    fScore.set(startNodeId, haversineDistance(startCoord, endCoord))
+    openSet.enqueue(startNodeId, fScore.get(startNodeId)!)
+
+    const visited = new Set<string>()
+
+    while (!openSet.isEmpty()) {
+        const current = openSet.dequeue()!
+
+        if (current === endNodeId) {
+            return reconstructPath(graph, cameFrom, current, gScore.get(current)!)
+        }
+
+        if (visited.has(current)) continue
+        visited.add(current)
+
+        const currentAttrs = graph.getNodeAttributes(current)
+        const currentCoord = { lat: currentAttrs.lat, lng: currentAttrs.lng }
+
+        for (const neighbor of graph.neighbors(current)) {
+            if (visited.has(neighbor)) continue
+
+            const edgeAttrs = graph.getEdgeAttributes(current, neighbor)
+            const tentativeG = gScore.get(current)! + edgeAttrs.distance
+
+            if (!gScore.has(neighbor) || tentativeG < gScore.get(neighbor)!) {
+                cameFrom.set(neighbor, current)
+                gScore.set(neighbor, tentativeG)
+
+                const neighborAttrs = graph.getNodeAttributes(neighbor)
+                const neighborCoord = { lat: neighborAttrs.lat, lng: neighborAttrs.lng }
+                const h = haversineDistance(neighborCoord, endCoord)
+                fScore.set(neighbor, tentativeG + h)
+
+                openSet.enqueue(neighbor, fScore.get(neighbor)!)
+            }
+        }
+    }
+
+    return null
+}
+
+/**
  * Route through all waypoints using curve-following algorithm
  */
 export function routeShapeWithCurveFollowing(
@@ -377,15 +438,100 @@ export function routeShapeWithCurveFollowing(
     const corridorNodes = findNodesInCorridor(graph, shapePoints, corridorWidth)
     console.log(`   ${corridorNodes.size} nodes in corridor`)
 
-    // Snap waypoints to nodes
+    // Snap waypoints to nodes - prefer nodes within corridor
+    console.log('📍 Snapping waypoints to street network...')
     const waypointNodes: string[] = []
-    for (const wp of waypoints) {
+    const snapDistances: number[] = []
+    let farSnaps = 0
+    let outOfCorridorSnaps = 0
+
+    for (let i = 0; i < waypoints.length; i++) {
+        const wp = waypoints[i]
         const nearest = findNearestNode(wp)
         if (!nearest) {
-            console.error(`Could not find node near waypoint (${wp.lat}, ${wp.lng})`)
+            console.error(`Could not find node near waypoint ${i + 1} (${wp.lat}, ${wp.lng})`)
             return null
         }
+
+        // Check if snapped node is in corridor
+        const isInCorridor = corridorNodes.has(nearest.nodeId)
+        if (!isInCorridor) {
+            outOfCorridorSnaps++
+            // Add the node to corridor anyway so routing can reach it
+            corridorNodes.add(nearest.nodeId)
+        }
+
+        // Track snap distances
+        snapDistances.push(nearest.distance)
+        if (nearest.distance > 200) { // More than 200m snap
+            farSnaps++
+            console.log(`   ⚠️ WP${i + 1}: snapped ${nearest.distance.toFixed(0)}m to ${nearest.nodeId}${!isInCorridor ? ' (outside corridor!)' : ''}`)
+        }
+
         waypointNodes.push(nearest.nodeId)
+    }
+
+    // Summary of snapping quality
+    const avgSnapDistance = snapDistances.reduce((a, b) => a + b, 0) / snapDistances.length
+    const maxSnapDistance = Math.max(...snapDistances)
+    console.log(`   Avg snap: ${avgSnapDistance.toFixed(0)}m, Max: ${maxSnapDistance.toFixed(0)}m`)
+    if (farSnaps > 0) {
+        console.log(`   ⚠️ ${farSnaps} waypoints snapped >200m from ideal position`)
+    }
+    if (outOfCorridorSnaps > 0) {
+        console.log(`   ⚠️ ${outOfCorridorSnaps} waypoints snapped to nodes outside original corridor`)
+    }
+
+    // Check for duplicate consecutive nodes (would cause 0-length segments)
+    let duplicateNodes = 0
+    for (let i = 0; i < waypointNodes.length; i++) {
+        const nextIdx = (i + 1) % waypointNodes.length
+        if (waypointNodes[i] === waypointNodes[nextIdx]) {
+            duplicateNodes++
+            console.log(`   ⚠️ WP${i + 1} and WP${nextIdx + 1} snapped to same node: ${waypointNodes[i]}`)
+        }
+    }
+    if (duplicateNodes > 0) {
+        console.log(`   ⚠️ ${duplicateNodes} consecutive waypoints share the same node`)
+    }
+
+    // Handle very close waypoints (e.g., at heart's sharp point)
+    // If two consecutive waypoints are < 50m apart but snapped to different nodes,
+    // check if those nodes are adjacent in the graph. If not, snap the second
+    // waypoint to the same node to avoid unnecessary detours.
+    const CLOSE_WAYPOINT_THRESHOLD = 50 // meters
+    let closeWaypointsFixed = 0
+
+    for (let i = 0; i < waypointNodes.length; i++) {
+        const nextIdx = (i + 1) % waypointNodes.length
+        const waypointDistance = haversineDistance(waypoints[i], waypoints[nextIdx])
+
+        if (waypointDistance < CLOSE_WAYPOINT_THRESHOLD && waypointNodes[i] !== waypointNodes[nextIdx]) {
+            // Get the snapped node positions
+            const node1Attrs = graph.getNodeAttributes(waypointNodes[i])
+            const node2Attrs = graph.getNodeAttributes(waypointNodes[nextIdx])
+            const snappedNodeDistance = haversineDistance(
+                { lat: node1Attrs.lat, lng: node1Attrs.lng },
+                { lat: node2Attrs.lat, lng: node2Attrs.lng }
+            )
+
+            // Check if the snapped nodes are adjacent
+            const areAdjacent = graph.hasEdge(waypointNodes[i], waypointNodes[nextIdx])
+
+            console.log(`   🔍 Close waypoints WP${i + 1}→WP${nextIdx + 1}: WP dist=${waypointDistance.toFixed(0)}m, node dist=${snappedNodeDistance.toFixed(0)}m, adjacent=${areAdjacent}`)
+
+            // Merge if nodes are far apart OR if the snapped node distance is much larger than waypoint distance
+            // (even if adjacent, we want to avoid detours)
+            if (!areAdjacent || snappedNodeDistance > waypointDistance * 3) {
+                console.log(`   🔧 Merging: WP${nextIdx + 1} → same node as WP${i + 1}`)
+                waypointNodes[nextIdx] = waypointNodes[i]
+                closeWaypointsFixed++
+            }
+        }
+    }
+
+    if (closeWaypointsFixed > 0) {
+        console.log(`   🔧 Fixed ${closeWaypointsFixed} close waypoint pairs to avoid detours`)
     }
 
     // Route between consecutive waypoints
@@ -395,12 +541,22 @@ export function routeShapeWithCurveFollowing(
     for (let i = 0; i < segmentCount; i++) {
         const fromNode = waypointNodes[i]
         const toNode = waypointNodes[(i + 1) % waypointNodes.length]
+        const nextWpIdx = (i + 1) % waypoints.length
+
+        // Calculate straight-line distance between waypoints for comparison
+        const straightLineDistance = haversineDistance(waypoints[i], waypoints[nextWpIdx])
 
         if (onProgress) {
             onProgress(i + 1, segmentCount)
         }
 
-        console.log(`   Segment ${i + 1}/${segmentCount}: ${fromNode} → ${toNode}`)
+        // Skip routing if start and end are the same node (merged close waypoints)
+        if (fromNode === toNode) {
+            console.log(`   Segment ${i + 1}/${segmentCount}: WP${i + 1}→WP${nextWpIdx + 1} - skipped (same node)`)
+            continue
+        }
+
+        console.log(`   Segment ${i + 1}/${segmentCount}: WP${i + 1}→WP${nextWpIdx + 1} (straight: ${(straightLineDistance / 1000).toFixed(2)}km)`)
 
         const route = findCurveFollowingRoute(
             graph,
@@ -416,31 +572,82 @@ export function routeShapeWithCurveFollowing(
 
         if (!route) {
             console.warn(`   ⚠️ No route found for segment ${i + 1}`)
-            // Try with expanded corridor
-            console.log(`   Retrying with expanded corridor...`)
-            const expandedCorridor = findNodesInCorridor(graph, shapePoints, corridorWidth * 2)
-            const retryRoute = findCurveFollowingRoute(
+
+            // Fallback 1: Try with expanded corridor (2x)
+            console.log(`   Retrying with 2x corridor...`)
+            let expandedCorridor = findNodesInCorridor(graph, shapePoints, corridorWidth * 2)
+            let retryRoute = findCurveFollowingRoute(
                 graph,
                 fromNode,
                 toNode,
                 shapePoints,
                 {
                     corridorWidth: corridorWidth * 2,
-                    directionPenalty: directionPenalty * 0.5, // Relax penalty
+                    directionPenalty: directionPenalty * 0.5,
                     allowedNodes: expandedCorridor
                 }
             )
 
+            // Fallback 2: Try with very wide corridor (4x)
             if (!retryRoute) {
-                console.error(`   ❌ Still no route found`)
+                console.log(`   Retrying with 4x corridor...`)
+                expandedCorridor = findNodesInCorridor(graph, shapePoints, corridorWidth * 4)
+                retryRoute = findCurveFollowingRoute(
+                    graph,
+                    fromNode,
+                    toNode,
+                    shapePoints,
+                    {
+                        corridorWidth: corridorWidth * 4,
+                        directionPenalty: 0.2, // Very relaxed
+                        allowedNodes: expandedCorridor
+                    }
+                )
+            }
+
+            // Fallback 3: Try unconstrained routing (no corridor limit)
+            if (!retryRoute) {
+                console.log(`   Retrying with unconstrained routing...`)
+                retryRoute = findUnconstrainedRoute(graph, fromNode, toNode)
+            }
+
+            if (!retryRoute) {
+                console.error(`   ❌ All fallbacks failed for segment ${i + 1}`)
+                // Create a direct connection as last resort
+                const fromAttrs = graph.getNodeAttributes(fromNode)
+                const toAttrs = graph.getNodeAttributes(toNode)
+                const directDistance = haversineDistance(
+                    { lat: fromAttrs.lat, lng: fromAttrs.lng },
+                    { lat: toAttrs.lat, lng: toAttrs.lng }
+                )
+
+                // Add a "gap" segment that just connects the two points directly
+                // This prevents holes but will show as a straight line
+                segments.push({
+                    nodeIds: [fromNode, toNode],
+                    coordinates: [
+                        { lat: fromAttrs.lat, lng: fromAttrs.lng },
+                        { lat: toAttrs.lat, lng: toAttrs.lng }
+                    ],
+                    distance: directDistance
+                })
+                console.log(`   ⚠️ Added direct connection (gap): ${(directDistance / 1000).toFixed(2)}km`)
                 continue
             }
 
             segments.push(retryRoute)
-            console.log(`   ✅ Found route with expanded corridor: ${(retryRoute.distance / 1000).toFixed(2)}km`)
+            const detourRatio = retryRoute.distance / straightLineDistance
+            console.log(`   ✅ Found route with fallback: ${(retryRoute.distance / 1000).toFixed(2)}km (${detourRatio.toFixed(1)}x straight-line)`)
+            if (detourRatio > 5) {
+                console.log(`   ⚠️ SUSPICIOUS: segment ${i + 1} is ${detourRatio.toFixed(1)}x the straight-line distance!`)
+            }
         } else {
             segments.push(route)
-            console.log(`   ✅ ${(route.distance / 1000).toFixed(2)}km`)
+            const detourRatio = route.distance / straightLineDistance
+            console.log(`   ✅ ${(route.distance / 1000).toFixed(2)}km (${detourRatio.toFixed(1)}x straight-line, ${route.nodeIds.length} nodes)`)
+            if (detourRatio > 5) {
+                console.log(`   ⚠️ SUSPICIOUS: segment ${i + 1} is ${detourRatio.toFixed(1)}x the straight-line distance!`)
+            }
         }
     }
 

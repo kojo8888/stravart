@@ -33,7 +33,10 @@
       "Bash(xargs kill -9)",
       "Bash(__NEW_LINE_e38be29d7c98d28a__ echo \"=== COMPARISON ===\")",
       "Bash(__NEW_LINE_e38be29d7c98d28a__ echo \"\")",
-      "mcp__ide__getDiagnostics"
+      "mcp__ide__getDiagnostics",
+      "Bash(__NEW_LINE_8a5c6122be75211e__ sleep 2)",
+      "Bash(1 __NEW_LINE_5c107810c033ebc5__ sleep 2 grep -E \"\\(Close|Merging|Fixed|SUSPICIOUS|snap|Snapping\\)\" /tmp/dev-server.log)",
+      "Bash(__NEW_LINE_8589d00f51d99164__ echo \"Response received, checking logs...\")"
     ],
     "deny": []
   },
