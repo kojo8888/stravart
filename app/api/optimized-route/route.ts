@@ -6,35 +6,140 @@
  * This combines the best of both worlds:
  * - Optimization ensures waypoints land near actual streets
  * - A* routing creates a continuous, rideable path
+ *
+ * Now supports WORLDWIDE routing by fetching OSM data dynamically!
  */
 
 import { NextResponse } from 'next/server'
-import path from 'path'
-import { buildGraphFromGeoJSON } from '@/lib/graph/builder'
-import { SpatialIndex } from '@/lib/graph/spatial-index'
-import { generateWaypointsForShape } from '@/lib/graph/shape-to-waypoints'
 import {
     routeShapeWithCurveFollowing,
     segmentsToGeoJSON
 } from '@/lib/graph/curve-router'
 import { haversineDistance } from '@/lib/graph/utils'
+import { fetchAndBuildGraph, calculateBBox } from '@/lib/graph/osm-fetcher'
 import type { StreetGraph } from '@/lib/graph/types'
+import type { SpatialIndex } from '@/lib/graph/spatial-index'
 
 // ========================================
-// GRAPH CACHING
+// QUALITY METRICS & THRESHOLDS
 // ========================================
-let graphCache: StreetGraph | null = null
-let spatialIndexCache: SpatialIndex | null = null
-let buildPromise: Promise<{ graph: StreetGraph; spatialIndex: SpatialIndex }> | null = null
 
-const GEOJSON_PATH = path.join(process.cwd(), 'fixtures/munich-streets.geojson')
+interface QualityMetrics {
+    distanceError: number       // |actual - target| / target (0.0 - 1.0+)
+    maxDetourRatio: number      // max(segment_dist / straight_line_dist)
+    avgDetourRatio: number      // average detour ratio
+    suspiciousSegments: number  // count of segments with detour > 5x
+    fallbackCount: number       // segments that needed expanded corridor
+    totalSegments: number
+}
 
-// Munich bounding box
-const MUNICH_BOUNDS = {
-    minLat: 47.9549,
-    maxLat: 48.3153,
-    minLng: 11.3120,
-    maxLng: 11.8520,
+interface QualityThresholds {
+    maxDistanceError: number    // e.g., 0.25 (25%)
+    maxDetourRatio: number      // e.g., 6.0 (6x)
+    maxSuspiciousSegments: number // e.g., 2
+    maxFallbackPercent: number  // e.g., 0.30 (30%)
+}
+
+const DEFAULT_THRESHOLDS: QualityThresholds = {
+    maxDistanceError: 0.25,      // 25% distance variance allowed
+    maxDetourRatio: 6.0,         // No segment should be > 6x straight-line
+    maxSuspiciousSegments: 2,    // Max 2 suspicious segments
+    maxFallbackPercent: 0.30,    // Max 30% of segments needing fallback
+}
+
+/**
+ * Assess route quality and determine if it passes thresholds
+ */
+function assessQuality(
+    metrics: QualityMetrics,
+    thresholds: QualityThresholds = DEFAULT_THRESHOLDS
+): { passed: boolean; score: number; issues: string[] } {
+    const issues: string[] = []
+
+    if (metrics.distanceError > thresholds.maxDistanceError) {
+        issues.push(`Distance error ${(metrics.distanceError * 100).toFixed(1)}% > ${(thresholds.maxDistanceError * 100).toFixed(0)}%`)
+    }
+
+    if (metrics.maxDetourRatio > thresholds.maxDetourRatio) {
+        issues.push(`Max detour ${metrics.maxDetourRatio.toFixed(1)}x > ${thresholds.maxDetourRatio}x`)
+    }
+
+    if (metrics.suspiciousSegments > thresholds.maxSuspiciousSegments) {
+        issues.push(`${metrics.suspiciousSegments} suspicious segments > ${thresholds.maxSuspiciousSegments}`)
+    }
+
+    const fallbackPercent = metrics.fallbackCount / metrics.totalSegments
+    if (fallbackPercent > thresholds.maxFallbackPercent) {
+        issues.push(`Fallback rate ${(fallbackPercent * 100).toFixed(0)}% > ${(thresholds.maxFallbackPercent * 100).toFixed(0)}%`)
+    }
+
+    // Calculate quality score (lower is better)
+    // Weighted combination of metrics
+    const score =
+        metrics.distanceError * 100 +           // Distance error weight: 100
+        metrics.maxDetourRatio * 5 +            // Max detour weight: 5
+        metrics.avgDetourRatio * 10 +           // Avg detour weight: 10
+        metrics.suspiciousSegments * 20 +       // Suspicious segment penalty: 20 each
+        fallbackPercent * 30                    // Fallback rate weight: 30
+
+    return {
+        passed: issues.length === 0,
+        score,
+        issues
+    }
+}
+
+/**
+ * Calculate quality metrics from route segments
+ */
+function calculateMetrics(
+    segments: Array<{ distance: number; coordinates: Array<{ lat: number; lng: number }> }>,
+    targetDistanceKm: number,
+    waypointCoords: Array<{ lat: number; lng: number }>
+): QualityMetrics {
+    let totalDistance = 0
+    let maxDetourRatio = 0
+    let totalDetourRatio = 0
+    let suspiciousSegments = 0
+    let fallbackCount = 0  // We'll estimate this from high detour ratios
+
+    for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i]
+        totalDistance += seg.distance
+
+        // Calculate straight-line distance for this segment
+        const wpFrom = waypointCoords[i]
+        const wpTo = waypointCoords[(i + 1) % waypointCoords.length]
+        const straightLine = haversineDistance(wpFrom, wpTo)
+
+        // Avoid division by zero
+        const detourRatio = straightLine > 0 ? seg.distance / straightLine : 1
+
+        totalDetourRatio += detourRatio
+        maxDetourRatio = Math.max(maxDetourRatio, detourRatio)
+
+        if (detourRatio > 5) {
+            suspiciousSegments++
+        }
+
+        // Estimate fallback usage from high detour ratios
+        if (detourRatio > 3) {
+            fallbackCount++
+        }
+    }
+
+    const actualDistanceKm = totalDistance / 1000
+    const distanceError = Math.abs(actualDistanceKm - targetDistanceKm) / targetDistanceKm
+    const avgDetourRatio = segments.length > 0 ? totalDetourRatio / segments.length : 0
+
+    return {
+        distanceError,
+        maxDetourRatio,
+        avgDetourRatio,
+        suspiciousSegments,
+        fallbackCount,
+        totalSegments: segments.length
+    }
 }
 
 // ========================================
@@ -283,50 +388,8 @@ function generateNormalizedShapePoints(
 }
 
 // ========================================
-// GRAPH LOADING
+// HELPERS
 // ========================================
-
-async function getGraph() {
-    if (graphCache && spatialIndexCache) {
-        return { graph: graphCache, spatialIndex: spatialIndexCache }
-    }
-
-    if (buildPromise) {
-        return await buildPromise
-    }
-
-    buildPromise = (async () => {
-        console.log('🔧 [OPTIMIZED-ROUTE] Building graph...')
-        const startTime = Date.now()
-
-        const graph = await buildGraphFromGeoJSON(GEOJSON_PATH, {
-            mergeThreshold: 5,
-        })
-
-        const spatialIndex = new SpatialIndex(graph, {
-            filterToLargestComponent: true,
-        })
-
-        const elapsed = (Date.now() - startTime) / 1000
-        console.log(`✅ [OPTIMIZED-ROUTE] Graph ready (${elapsed.toFixed(1)}s)`)
-
-        graphCache = graph
-        spatialIndexCache = spatialIndex
-
-        return { graph, spatialIndex }
-    })()
-
-    return await buildPromise
-}
-
-function isInMunich(location: { lat: number; lng: number }): boolean {
-    return (
-        location.lat >= MUNICH_BOUNDS.minLat &&
-        location.lat <= MUNICH_BOUNDS.maxLat &&
-        location.lng >= MUNICH_BOUNDS.minLng &&
-        location.lng <= MUNICH_BOUNDS.maxLng
-    )
-}
 
 function getShapeType(shapeName: string): 'heart' | 'circle' | 'star' | 'square' | null {
     const normalized = shapeName.toLowerCase().trim()
@@ -360,6 +423,159 @@ function calculateRadius(targetDistanceKm: number, shapeType: string): number {
 }
 
 // ========================================
+// ROUTE GENERATION HELPER
+// ========================================
+
+interface RouteResult {
+    segments: Array<{ distance: number; coordinates: Array<{ lat: number; lng: number }>; nodeIds: string[] }>
+    snappedWaypoints: Array<{ lat: number; lng: number; nodeId: string; snapDistance: number }>
+    params: OptimizationParams
+    metrics: QualityMetrics
+    qualityAssessment: { passed: boolean; score: number; issues: string[] }
+    corridorWidth: number
+    directionPenalty: number
+    avgSnapDistance: number
+    maxSnapDistance: number
+}
+
+/**
+ * Generate a route with specific rotation offset
+ * Returns null if route generation fails
+ */
+function generateRouteWithRotation(
+    graph: StreetGraph,
+    spatialIndex: SpatialIndex,
+    baseParams: OptimizationParams,
+    rotationOffset: number,
+    shapeType: 'heart' | 'circle' | 'star' | 'square',
+    targetDistanceKm: number,
+    waypointCount: number,
+    centerLat: number
+): RouteResult | null {
+    // Apply rotation offset to base params
+    const params: OptimizationParams = {
+        ...baseParams,
+        rotation: baseParams.rotation + rotationOffset
+    }
+
+    // Generate waypoints with rotated params
+    const routingNormalizedPoints = generateNormalizedShapePoints(shapeType, waypointCount)
+    const routingWaypoints = transformShapePoints(routingNormalizedPoints, params, centerLat)
+
+    // Snap waypoints with connectivity-aware selection
+    const snappedWaypoints: Array<{ lat: number; lng: number; nodeId: string; snapDistance: number }> = []
+    let totalSnapDistance = 0
+    let maxSnapDistance = 0
+
+    for (let i = 0; i < routingWaypoints.length; i++) {
+        const wp = routingWaypoints[i]
+        const candidates = spatialIndex.findKNearest(wp, 5)
+
+        if (candidates.length === 0) continue
+
+        if (snappedWaypoints.length === 0) {
+            const nearest = candidates[0]
+            const nodeAttrs = graph.getNodeAttributes(nearest.nodeId)
+            snappedWaypoints.push({
+                lat: nodeAttrs.lat,
+                lng: nodeAttrs.lng,
+                nodeId: nearest.nodeId,
+                snapDistance: nearest.distance
+            })
+            totalSnapDistance += nearest.distance
+            maxSnapDistance = Math.max(maxSnapDistance, nearest.distance)
+            continue
+        }
+
+        const prevSnapped = snappedWaypoints[snappedWaypoints.length - 1]
+        const prevCoord = { lat: prevSnapped.lat, lng: prevSnapped.lng }
+        const idealWpDistance = haversineDistance(routingWaypoints[i - 1] || wp, wp)
+
+        let bestCandidate = candidates[0]
+        let bestScore = Infinity
+
+        for (const candidate of candidates) {
+            const candidateAttrs = graph.getNodeAttributes(candidate.nodeId)
+            const candidateCoord = { lat: candidateAttrs.lat, lng: candidateAttrs.lng }
+            const distFromPrev = haversineDistance(prevCoord, candidateCoord)
+            const distancePenalty = distFromPrev > idealWpDistance * 3
+                ? (distFromPrev - idealWpDistance) * 2
+                : 0
+            const score = candidate.distance + distancePenalty
+
+            if (score < bestScore) {
+                bestScore = score
+                bestCandidate = candidate
+            }
+        }
+
+        const nodeAttrs = graph.getNodeAttributes(bestCandidate.nodeId)
+        snappedWaypoints.push({
+            lat: nodeAttrs.lat,
+            lng: nodeAttrs.lng,
+            nodeId: bestCandidate.nodeId,
+            snapDistance: bestCandidate.distance
+        })
+        totalSnapDistance += bestCandidate.distance
+        maxSnapDistance = Math.max(maxSnapDistance, bestCandidate.distance)
+    }
+
+    if (snappedWaypoints.length < 3) return null
+
+    const avgSnapDistance = totalSnapDistance / snappedWaypoints.length
+
+    // Generate dense shape points for corridor
+    const denseShapePoints = transformShapePoints(
+        generateNormalizedShapePoints(shapeType, 200),
+        params,
+        centerLat
+    )
+
+    // Calculate corridor and penalty
+    const corridorWidth = Math.min(300, Math.max(150, params.scale * 0.12))
+    const directionPenalty = Math.min(0.5, 0.3 + (targetDistanceKm / 150))
+
+    // Route
+    const snappedCoords = snappedWaypoints.map(wp => ({ lat: wp.lat, lng: wp.lng }))
+    const segments = routeShapeWithCurveFollowing(
+        graph,
+        snappedCoords,
+        denseShapePoints,
+        (coord) => spatialIndex.findNearest(coord),
+        { corridorWidth, directionPenalty, closeLoop: true }
+    )
+
+    if (!segments || segments.length === 0) return null
+
+    // Calculate quality metrics
+    const metrics = calculateMetrics(segments, targetDistanceKm, snappedCoords)
+    const qualityAssessment = assessQuality(metrics)
+
+    return {
+        segments,
+        snappedWaypoints,
+        params,
+        metrics,
+        qualityAssessment,
+        corridorWidth,
+        directionPenalty,
+        avgSnapDistance,
+        maxSnapDistance
+    }
+}
+
+// Rotation offsets to try (in radians) if initial quality is poor
+const ROTATION_OFFSETS = [
+    0,                      // Original
+    Math.PI / 12,           // +15°
+    -Math.PI / 12,          // -15°
+    Math.PI / 6,            // +30°
+    -Math.PI / 6,           // -30°
+    Math.PI / 4,            // +45°
+    -Math.PI / 4,           // -45°
+]
+
+// ========================================
 // API ENDPOINT
 // ========================================
 
@@ -381,9 +597,10 @@ export async function POST(req: Request) {
             )
         }
 
-        if (!isInMunich(location)) {
+        // Validate latitude/longitude ranges
+        if (location.lat < -90 || location.lat > 90 || location.lng < -180 || location.lng > 180) {
             return NextResponse.json(
-                { error: 'Location outside supported region (Munich area)' },
+                { error: 'Invalid coordinates: lat must be -90 to 90, lng must be -180 to 180' },
                 { status: 400 }
             )
         }
@@ -405,15 +622,36 @@ export async function POST(req: Request) {
 
         console.log(`🎯 [OPTIMIZED-ROUTE] Creating ${shapeType} at (${location.lat.toFixed(4)}, ${location.lng.toFixed(4)})`)
         console.log(`   Target: ${targetDistanceKm}km`)
-
-        // Load graph
-        const graphStart = Date.now()
-        const { graph, spatialIndex } = await getGraph()
-        const graphTime = Date.now() - graphStart
+        console.log(`   🌍 Worldwide routing enabled!`)
 
         // Calculate initial radius estimate
         const initialRadius = calculateRadius(targetDistanceKm, shapeType)
         console.log(`   Initial radius estimate: ${initialRadius.toFixed(0)}m`)
+
+        // Generate initial shape points to calculate bbox for fetching
+        const initialShapePoints = transformShapePoints(
+            generateNormalizedShapePoints(shapeType, 20),
+            {
+                scale: initialRadius,
+                rotation: 0,
+                translateLng: location.lng,
+                translateLat: location.lat
+            },
+            location.lat
+        )
+
+        // Calculate bbox with padding for routing flexibility
+        const paddingMeters = Math.max(500, initialRadius * 0.5)  // At least 500m or half the radius
+        const bbox = calculateBBox(initialShapePoints, paddingMeters)
+
+        console.log(`   📦 Fetching OSM data for bbox...`)
+
+        // Fetch graph dynamically for this area
+        const graphStart = Date.now()
+        const { graph, spatialIndex, fromCache, nodeCount, edgeCount } = await fetchAndBuildGraph(bbox)
+        const graphTime = Date.now() - graphStart
+
+        console.log(`   Graph: ${nodeCount} nodes, ${edgeCount} edges (${fromCache ? 'cached' : 'fetched'}) in ${graphTime}ms`)
 
         // ========================================
         // PHASE 1: OPTIMIZE SHAPE PLACEMENT
@@ -459,147 +697,81 @@ export async function POST(req: Request) {
         console.log(`   Center shift: (${((optimalParams.translateLng - location.lng) * 111000).toFixed(0)}m, ${((optimalParams.translateLat - location.lat) * 111000).toFixed(0)}m)`)
 
         // ========================================
-        // PHASE 2: GENERATE OPTIMIZED WAYPOINTS
+        // PHASE 2 & 3: GENERATE ROUTE WITH AUTO-RETRY
         // ========================================
-        console.log('📍 Phase 2: Generating optimized waypoints...')
-
-        // Generate waypoints with desired count for routing (not all shape points)
-        const routingNormalizedPoints = generateNormalizedShapePoints(shapeType, waypointCount)
-        const routingWaypoints = transformShapePoints(routingNormalizedPoints, optimalParams, location.lat)
-
-        console.log(`   Generated ${routingWaypoints.length} routing waypoints`)
-
-        // Snap waypoints to street network with connectivity-aware selection
-        const snappedWaypoints: Array<{ lat: number; lng: number; nodeId: string; snapDistance: number }> = []
-        let totalSnapDistance = 0
-        let maxSnapDistance = 0
-
-        for (let i = 0; i < routingWaypoints.length; i++) {
-            const wp = routingWaypoints[i]
-
-            // Find multiple candidate nodes (not just nearest)
-            const candidates = spatialIndex.findKNearest(wp, 5)
-
-            if (candidates.length === 0) {
-                console.error(`No nodes found near waypoint ${i + 1}`)
-                continue
-            }
-
-            // For first waypoint or if no previous snapped, use nearest
-            if (snappedWaypoints.length === 0) {
-                const nearest = candidates[0]
-                const nodeAttrs = graph.getNodeAttributes(nearest.nodeId)
-                snappedWaypoints.push({
-                    lat: nodeAttrs.lat,
-                    lng: nodeAttrs.lng,
-                    nodeId: nearest.nodeId,
-                    snapDistance: nearest.distance
-                })
-                totalSnapDistance += nearest.distance
-                maxSnapDistance = Math.max(maxSnapDistance, nearest.distance)
-                continue
-            }
-
-            // For subsequent waypoints, prefer nodes that are close to previous snapped node
-            const prevSnapped = snappedWaypoints[snappedWaypoints.length - 1]
-            const prevCoord = { lat: prevSnapped.lat, lng: prevSnapped.lng }
-
-            // Calculate ideal distance between waypoints (straight line)
-            const idealWpDistance = haversineDistance(routingWaypoints[i - 1] || wp, wp)
-
-            // Score each candidate: prefer close snap + reasonable distance from previous
-            let bestCandidate = candidates[0]
-            let bestScore = Infinity
-
-            for (const candidate of candidates) {
-                const candidateAttrs = graph.getNodeAttributes(candidate.nodeId)
-                const candidateCoord = { lat: candidateAttrs.lat, lng: candidateAttrs.lng }
-
-                // Distance from previous snapped node
-                const distFromPrev = haversineDistance(prevCoord, candidateCoord)
-
-                // Score: snap distance + penalty for being far from previous
-                // If distFromPrev > 3x idealWpDistance, heavily penalize
-                const distancePenalty = distFromPrev > idealWpDistance * 3
-                    ? (distFromPrev - idealWpDistance) * 2
-                    : 0
-
-                const score = candidate.distance + distancePenalty
-
-                if (score < bestScore) {
-                    bestScore = score
-                    bestCandidate = candidate
-                }
-            }
-
-            const nodeAttrs = graph.getNodeAttributes(bestCandidate.nodeId)
-            snappedWaypoints.push({
-                lat: nodeAttrs.lat,
-                lng: nodeAttrs.lng,
-                nodeId: bestCandidate.nodeId,
-                snapDistance: bestCandidate.distance
-            })
-            totalSnapDistance += bestCandidate.distance
-            maxSnapDistance = Math.max(maxSnapDistance, bestCandidate.distance)
-        }
-
-        const avgSnapDistance = totalSnapDistance / snappedWaypoints.length
-        console.log(`   Snap distances: avg=${avgSnapDistance.toFixed(0)}m, max=${maxSnapDistance.toFixed(0)}m`)
-
-        // ========================================
-        // PHASE 3: A* ROUTING
-        // ========================================
-        console.log('🛤️ Phase 3: A* routing between waypoints...')
+        console.log('📍 Phase 2-3: Generating route with quality assessment...')
         const routeStart = Date.now()
 
-        // Generate dense shape points for corridor/direction calculation
-        const denseShapePoints = transformShapePoints(
-            generateNormalizedShapePoints(shapeType, 200),
-            optimalParams,
-            location.lat
-        )
+        let bestResult: RouteResult | null = null
+        let bestScore = Infinity
+        let attemptCount = 0
+        const maxAttempts = ROTATION_OFFSETS.length
 
-        // Calculate adaptive corridor and direction penalty
-        // Use wider corridor (300m) to allow more routing flexibility
-        // Lower direction penalty to avoid forcing routes backwards
-        const corridorWidth = Math.min(300, Math.max(150, optimalParams.scale * 0.12))
-        const directionPenalty = Math.min(0.5, 0.3 + (targetDistanceKm / 150))
+        // Try generating routes with different rotation offsets
+        for (const rotationOffset of ROTATION_OFFSETS) {
+            attemptCount++
+            const rotationDegrees = (rotationOffset * 180 / Math.PI).toFixed(0)
+            console.log(`   Attempt ${attemptCount}/${maxAttempts}: rotation offset ${rotationDegrees}°`)
 
-        console.log(`   Corridor: ${corridorWidth.toFixed(0)}m, Direction penalty: ${directionPenalty.toFixed(2)}`)
+            const result = generateRouteWithRotation(
+                graph,
+                spatialIndex,
+                optimalParams,
+                rotationOffset,
+                shapeType,
+                targetDistanceKm,
+                waypointCount,
+                location.lat
+            )
 
-        // Use snapped waypoint coordinates so routing uses the exact nodes we selected
-        const snappedCoords = snappedWaypoints.map(wp => ({ lat: wp.lat, lng: wp.lng }))
-
-        const segments = routeShapeWithCurveFollowing(
-            graph,
-            snappedCoords,
-            denseShapePoints,
-            (coord) => spatialIndex.findNearest(coord),
-            {
-                corridorWidth,
-                directionPenalty,
-                closeLoop: true,
+            if (!result) {
+                console.log(`     ❌ Route generation failed`)
+                continue
             }
-        )
+
+            const { qualityAssessment, metrics } = result
+            console.log(`     Score: ${qualityAssessment.score.toFixed(1)}, Distance error: ${(metrics.distanceError * 100).toFixed(1)}%`)
+
+            if (qualityAssessment.passed) {
+                console.log(`     ✅ Quality passed!`)
+                bestResult = result
+                bestScore = qualityAssessment.score
+                break  // Found a good route, stop searching
+            }
+
+            // Track best result even if it doesn't pass thresholds
+            if (qualityAssessment.score < bestScore) {
+                bestResult = result
+                bestScore = qualityAssessment.score
+                console.log(`     📊 New best (issues: ${qualityAssessment.issues.join(', ')})`)
+            }
+        }
 
         const routeTime = Date.now() - routeStart
 
-        if (!segments || segments.length === 0) {
+        if (!bestResult) {
             return NextResponse.json(
-                { error: 'Route generation failed. Try a different location.' },
+                { error: 'Route generation failed after all attempts. Try a different location.' },
                 { status: 500 }
             )
+        }
+
+        // Log final result
+        if (bestResult.qualityAssessment.passed) {
+            console.log(`🎉 Found quality route on attempt ${attemptCount}`)
+        } else {
+            console.log(`⚠️ Using best available route (score: ${bestScore.toFixed(1)})`)
+            console.log(`   Issues: ${bestResult.qualityAssessment.issues.join(', ')}`)
         }
 
         // ========================================
         // BUILD RESPONSE
         // ========================================
-        const geojson = segmentsToGeoJSON(segments)
+        const geojson = segmentsToGeoJSON(bestResult.segments)
         const actualDistanceKm = parseFloat(geojson.properties.totalDistanceKm)
-        const distanceError = Math.abs(actualDistanceKm - targetDistanceKm) / targetDistanceKm
 
         // Add waypoint markers for visualization - use SNAPPED positions (actual street nodes)
-        const waypointFeatures = snappedWaypoints.map((wp, index) => ({
+        const waypointFeatures = bestResult.snappedWaypoints.map((wp, index) => ({
             type: 'Feature' as const,
             properties: {
                 type: 'waypoint',
@@ -621,27 +793,39 @@ export async function POST(req: Request) {
                 shape: shapeType,
                 center: location,
                 optimizedCenter: {
-                    lat: optimalParams.translateLat,
-                    lng: optimalParams.translateLng
+                    lat: bestResult.params.translateLat,
+                    lng: bestResult.params.translateLng
                 },
                 targetDistanceKm,
                 actualDistanceKm,
-                distanceError: `${(distanceError * 100).toFixed(1)}%`,
-                optimizedScale: Math.round(optimalParams.scale),
-                optimizedRotation: `${(optimalParams.rotation * 180 / Math.PI).toFixed(1)}°`,
-                corridorWidth: Math.round(corridorWidth),
-                directionPenalty,
-                waypointCount: routingWaypoints.length,
-                avgSnapDistance: Math.round(avgSnapDistance),
-                maxSnapDistance: Math.round(maxSnapDistance),
+                distanceError: `${(bestResult.metrics.distanceError * 100).toFixed(1)}%`,
+                optimizedScale: Math.round(bestResult.params.scale),
+                optimizedRotation: `${(bestResult.params.rotation * 180 / Math.PI).toFixed(1)}°`,
+                corridorWidth: Math.round(bestResult.corridorWidth),
+                directionPenalty: bestResult.directionPenalty,
+                waypointCount: bestResult.snappedWaypoints.length,
+                avgSnapDistance: Math.round(bestResult.avgSnapDistance),
+                maxSnapDistance: Math.round(bestResult.maxSnapDistance),
                 graphLoadTimeMs: graphTime,
+                graphFromCache: fromCache,
+                graphNodeCount: nodeCount,
+                graphEdgeCount: edgeCount,
                 optimizationTimeMs: optimizeTime,
                 routingTimeMs: routeTime,
-                method: 'optimized-curve-following',
+                method: 'optimized-curve-following-worldwide',
+                // Quality metrics
+                qualityPassed: bestResult.qualityAssessment.passed,
+                qualityScore: Math.round(bestResult.qualityAssessment.score * 10) / 10,
+                qualityIssues: bestResult.qualityAssessment.issues,
+                maxDetourRatio: Math.round(bestResult.metrics.maxDetourRatio * 10) / 10,
+                avgDetourRatio: Math.round(bestResult.metrics.avgDetourRatio * 10) / 10,
+                suspiciousSegments: bestResult.metrics.suspiciousSegments,
+                attemptCount,
             }
         }
 
-        console.log(`✅ [OPTIMIZED-ROUTE] Complete: ${actualDistanceKm.toFixed(2)}km (${(distanceError * 100).toFixed(1)}% error)`)
+        console.log(`✅ [OPTIMIZED-ROUTE] Complete: ${actualDistanceKm.toFixed(2)}km (${(bestResult.metrics.distanceError * 100).toFixed(1)}% error)`)
+        console.log(`   Quality: ${bestResult.qualityAssessment.passed ? 'PASSED' : 'BEST EFFORT'} (score: ${bestScore.toFixed(1)}, attempts: ${attemptCount})`)
         console.log(`   Total time: ${graphTime + optimizeTime + routeTime}ms`)
 
         return NextResponse.json(result)
@@ -658,11 +842,17 @@ export async function POST(req: Request) {
 export async function GET() {
     return NextResponse.json({
         service: 'optimized-route',
-        description: 'Hybrid router: Nelder-Mead optimization + A* pathfinding',
-        status: graphCache ? 'ready' : 'not-loaded',
-        supportedRegion: 'Munich, Germany',
+        description: 'Hybrid router: Nelder-Mead optimization + A* pathfinding with dynamic OSM fetching',
+        status: 'ready',
+        supportedRegion: 'Worldwide (fetches OSM data dynamically)',
         supportedShapes: ['heart', 'circle', 'star', 'square'],
-        method: 'Phase 1: Optimize shape placement, Phase 2: A* routing',
+        method: 'Phase 1: Fetch OSM bbox, Phase 2: Optimize shape placement, Phase 3: A* routing',
+        features: [
+            'Worldwide coverage via Overpass API',
+            'Automatic bbox calculation from shape',
+            'In-memory graph caching (30 min TTL)',
+            'Quality metrics and auto-retry',
+        ],
         example: {
             method: 'POST',
             body: {
@@ -670,6 +860,12 @@ export async function GET() {
                 shape: 'heart',
                 targetDistanceKm: 30
             }
+        },
+        exampleLocations: {
+            munich: { lat: 48.1351, lng: 11.5820 },
+            paris: { lat: 48.8566, lng: 2.3522 },
+            newYork: { lat: 40.7128, lng: -74.0060 },
+            tokyo: { lat: 35.6762, lng: 139.6503 },
         }
     })
 }

@@ -20,16 +20,25 @@ import type {
 import { haversineDistance, coordToNodeId, nodeIdToCoord, calculateBoundingBox } from './utils'
 
 /**
- * Build a street network graph from GeoJSON file (streaming approach)
+ * Build a street network graph from GeoJSON file or object
  * Only creates nodes at intersections to avoid Map size limits
+ *
+ * @param geojsonSource - Either a file path (string) or a GeoJSON FeatureCollection object
+ * @param options - Build options
  */
 export async function buildGraphFromGeoJSON(
-    geojsonPath: string,
+    geojsonSource: string | GeoJSON.FeatureCollection,
     options: GraphBuildOptions = {}
 ): Promise<StreetGraph> {
     const { mergeThreshold = 5, onProgress } = options
 
-    console.log('🔧 Building graph from GeoJSON (2-pass approach)...')
+    // If source is an object, use in-memory processing
+    if (typeof geojsonSource === 'object') {
+        return buildGraphFromGeoJSONObject(geojsonSource, options)
+    }
+
+    const geojsonPath = geojsonSource
+    console.log('🔧 Building graph from GeoJSON file (2-pass approach)...')
     console.log(`📁 File: ${geojsonPath}`)
     console.log('')
 
@@ -376,4 +385,199 @@ export function getGraphStats(graph: StreetGraph) {
         maxDegree,
         minDegree,
     }
+}
+
+/**
+ * Build graph from in-memory GeoJSON object (no file streaming)
+ * Faster for smaller datasets fetched from API
+ */
+async function buildGraphFromGeoJSONObject(
+    geojson: GeoJSON.FeatureCollection,
+    options: GraphBuildOptions = {}
+): Promise<StreetGraph> {
+    const { mergeThreshold = 5 } = options
+    const startTime = Date.now()
+
+    console.log('🔧 Building graph from GeoJSON object...')
+    console.log(`📊 Features: ${geojson.features.length}`)
+
+    // Pass 1: Find all intersection points
+    const coordCounts = new Map<string, number>()
+
+    for (const feature of geojson.features) {
+        if (feature.geometry?.type !== 'LineString') continue
+        const coords = (feature.geometry as GeoJSON.LineString).coordinates
+        if (!coords || coords.length < 2) continue
+
+        // Count endpoints
+        const firstId = coordToNodeId(coords[0][1], coords[0][0])
+        const lastId = coordToNodeId(coords[coords.length - 1][1], coords[coords.length - 1][0])
+
+        coordCounts.set(firstId, (coordCounts.get(firstId) || 0) + 1)
+        if (firstId !== lastId) {
+            coordCounts.set(lastId, (coordCounts.get(lastId) || 0) + 1)
+        }
+    }
+
+    // Get intersection nodes
+    const rawIntersections = new Set(
+        Array.from(coordCounts.entries())
+            .filter(([_, count]) => count > 1)
+            .map(([id]) => id)
+    )
+
+    // Cluster nearby intersections
+    const nodeMapping = new Map<string, string>()
+    const clusterRepresentatives = new Map<string, { lat: number; lng: number; count: number }>()
+    const clusterIndex = new RBush<{ minX: number; minY: number; maxX: number; maxY: number; nodeId: string }>()
+
+    for (const nodeId of rawIntersections) {
+        const coord = nodeIdToCoord(nodeId)
+        const degreeOffset = mergeThreshold / 111000
+
+        const nearbyItems = clusterIndex.search({
+            minX: coord.lng - degreeOffset,
+            minY: coord.lat - degreeOffset,
+            maxX: coord.lng + degreeOffset,
+            maxY: coord.lat + degreeOffset,
+        })
+
+        let closestClusterId: string | null = null
+        let closestDistance = mergeThreshold
+
+        for (const item of nearbyItems) {
+            const clusterCoord = clusterRepresentatives.get(item.nodeId)!
+            const distance = haversineDistance(coord, clusterCoord)
+            if (distance <= closestDistance) {
+                closestDistance = distance
+                closestClusterId = item.nodeId
+            }
+        }
+
+        if (closestClusterId) {
+            nodeMapping.set(nodeId, closestClusterId)
+            const clusterCoord = clusterRepresentatives.get(closestClusterId)!
+
+            // Remove old item
+            const oldItems = clusterIndex.search({
+                minX: clusterCoord.lng,
+                minY: clusterCoord.lat,
+                maxX: clusterCoord.lng,
+                maxY: clusterCoord.lat,
+            })
+            for (const item of oldItems) {
+                if (item.nodeId === closestClusterId) {
+                    clusterIndex.remove(item)
+                    break
+                }
+            }
+
+            // Update cluster
+            const newCount = clusterCoord.count + 1
+            clusterCoord.lat = (clusterCoord.lat * clusterCoord.count + coord.lat) / newCount
+            clusterCoord.lng = (clusterCoord.lng * clusterCoord.count + coord.lng) / newCount
+            clusterCoord.count = newCount
+
+            clusterIndex.insert({
+                minX: clusterCoord.lng,
+                minY: clusterCoord.lat,
+                maxX: clusterCoord.lng,
+                maxY: clusterCoord.lat,
+                nodeId: closestClusterId,
+            })
+        } else {
+            nodeMapping.set(nodeId, nodeId)
+            clusterRepresentatives.set(nodeId, { lat: coord.lat, lng: coord.lng, count: 1 })
+            clusterIndex.insert({
+                minX: coord.lng,
+                minY: coord.lat,
+                maxX: coord.lng,
+                maxY: coord.lat,
+                nodeId: nodeId,
+            })
+        }
+    }
+
+    const intersections = new Set(clusterRepresentatives.keys())
+
+    // Pass 2: Build graph
+    const graph = new Graph<StreetNode, StreetEdge>({ multi: false, type: 'undirected' })
+    let featureCount = 0
+
+    for (const feature of geojson.features) {
+        if (feature.geometry?.type !== 'LineString') continue
+        const coordinates = (feature.geometry as GeoJSON.LineString).coordinates
+        if (!coordinates || coordinates.length < 2) continue
+
+        const wayId = (feature.properties as any)?.osmid?.toString() || (feature.properties as any)?.['@id']?.toString()
+        const highway = (feature.properties as any)?.highway
+        const name = (feature.properties as any)?.name
+        const surface = (feature.properties as any)?.surface
+
+        // Find intersection points
+        const intersectionIndices: number[] = []
+        for (let i = 0; i < coordinates.length; i++) {
+            const [lng, lat] = coordinates[i]
+            const rawNodeId = coordToNodeId(lat, lng)
+            const clusterNodeId = nodeMapping.get(rawNodeId)
+
+            if (clusterNodeId && intersections.has(clusterNodeId)) {
+                intersectionIndices.push(i)
+            }
+        }
+
+        if (intersectionIndices.length < 2) continue
+
+        // Create nodes and edges
+        for (let i = 0; i < intersectionIndices.length; i++) {
+            const idx = intersectionIndices[i]
+            const [lng, lat] = coordinates[idx]
+            const rawNodeId = coordToNodeId(lat, lng)
+            const nodeId = nodeMapping.get(rawNodeId) || rawNodeId
+            const clusterCoord = clusterRepresentatives.get(nodeId)
+
+            const nodeLat = clusterCoord?.lat ?? lat
+            const nodeLng = clusterCoord?.lng ?? lng
+
+            if (!graph.hasNode(nodeId)) {
+                graph.addNode(nodeId, {
+                    id: nodeId,
+                    lat: nodeLat,
+                    lng: nodeLng,
+                    ways: wayId ? [wayId] : undefined,
+                })
+            }
+
+            if (i > 0) {
+                const prevIdx = intersectionIndices[i - 1]
+                const [prevLng, prevLat] = coordinates[prevIdx]
+                const prevRawNodeId = coordToNodeId(prevLat, prevLng)
+                const prevNodeId = nodeMapping.get(prevRawNodeId) || prevRawNodeId
+
+                let distance = 0
+                for (let j = prevIdx; j < idx; j++) {
+                    const [lng1, lat1] = coordinates[j]
+                    const [lng2, lat2] = coordinates[j + 1]
+                    distance += haversineDistance({ lat: lat1, lng: lng1 }, { lat: lat2, lng: lng2 })
+                }
+
+                if (prevNodeId !== nodeId && !graph.hasEdge(prevNodeId, nodeId)) {
+                    graph.addEdge(prevNodeId, nodeId, {
+                        distance,
+                        wayId,
+                        highway,
+                        name,
+                        surface,
+                    })
+                }
+            }
+        }
+
+        featureCount++
+    }
+
+    const elapsed = (Date.now() - startTime) / 1000
+    console.log(`✅ Graph built: ${graph.order} nodes, ${graph.size} edges in ${elapsed.toFixed(2)}s`)
+
+    return graph
 }

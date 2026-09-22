@@ -13,75 +13,123 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Strava Art is a Next.js 15 application that generates rideable bike/run routes shaped like drawings (hearts, stars, circles, squares) by routing through real street networks.
 
-### Current Routing Strategy
+### Routing Strategies
 
-**Curve-Following Router (Primary - Munich)**
+**1. Optimized Route API (Primary - Worldwide)**
+- Hybrid approach: Nelder-Mead optimization + A* pathfinding
+- Fetches OSM data dynamically via Overpass API (no pre-built fixtures needed)
+- Works anywhere in the world
+- Located in `app/api/optimized-route/route.ts`
+- Uses `lib/graph/osm-fetcher.ts` for dynamic data fetching
+
+**2. Curve-Following Router (Legacy - Munich only)**
 - Uses direction-aware A* pathfinding with corridor constraints
-- Creates continuous, rideable routes that follow shape outlines
+- Requires pre-built 75MB fixture file
 - Located in `lib/graph/curve-router.ts`
 - API endpoint: `/api/shape-route`
-- See `/docs/ROUTING_STRATEGY.md` for detailed documentation
 
-**Optimization-Based Fitting (Fallback - Worldwide)**
+**3. Optimization-Based Fitting (Points only)**
 - Uses Nelder-Mead algorithm to fit shapes to street nodes
 - Returns points (not connected routes)
 - Located in `app/api/fit-fetch/route.js`
 
 ### API Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/shape-route` | POST | Curve-following router for Munich (recommended) |
-| `/api/fit-fetch` | POST | Optimization-based fitting (fallback) |
+| Endpoint | Method | Coverage | Returns |
+|----------|--------|----------|---------|
+| `/api/optimized-route` | POST | Worldwide | Connected A* routes |
+| `/api/shape-route` | POST | Munich only | Connected A* routes |
+| `/api/fit-fetch` | POST | Worldwide | Points only |
 
-### Routing Flow (Munich)
+### Optimized Route Flow (Worldwide)
 
 ```
 1. User selects location + shape + distance
-2. Frontend calls /api/shape-route
-3. Shape points generated (heart, star, circle, square)
-4. Radius calculated from target distance
-5. Corridor defined (20% of radius)
-6. 40 waypoints placed around shape
-7. Curve-following A* routes between waypoints
-8. Direction penalty prevents shortcuts
-9. Returns GeoJSON with 40 connected LineString segments
-10. GPX export available for Strava/GPS devices
+2. Frontend calls /api/optimized-route
+3. Calculate shape bounding box from initial radius
+4. Fetch OSM street data for bbox via Overpass API (~2-5s)
+5. Build graph in memory (nodes at intersections only)
+6. Phase 1: Nelder-Mead optimization finds best position/rotation
+7. Phase 2: Generate waypoints on optimized shape
+8. Phase 3: Connectivity-aware waypoint snapping to street nodes
+9. Phase 4: A* routing between waypoints with corridor constraints
+10. Quality assessment - auto-retry with rotation variations if needed
+11. Returns GeoJSON with connected LineString segments + quality metrics
 ```
+
+### Quality Metrics & Auto-Retry
+
+The optimized-route API includes quality assessment with automatic retry:
+
+| Metric | Threshold | Description |
+|--------|-----------|-------------|
+| `distanceError` | 25% | Actual vs target distance variance |
+| `maxDetourRatio` | 6.0x | Worst segment detour vs straight-line |
+| `suspiciousSegments` | 2 | Segments with detour > 5x |
+| `fallbackPercent` | 30% | Segments needing expanded corridor |
+
+If quality fails, the system retries with rotation offsets: 0°, ±15°, ±30°, ±45° (up to 7 attempts).
+
+### Dynamic OSM Fetching
+
+The `lib/graph/osm-fetcher.ts` module handles worldwide data:
+
+```typescript
+// Calculates bbox from shape coordinates + padding
+calculateBBox(coords, paddingMeters)
+
+// Fetches from Overpass API, builds graph, caches result
+fetchAndBuildGraph(bbox) → { graph, spatialIndex, fromCache }
+```
+
+**Caching:**
+- In-memory cache with 30-minute TTL
+- Cache key based on bbox (rounded to ~100m precision)
+- Subsequent requests in same area are instant (0ms)
+
+**Highway types fetched:**
+- residential, cycleway, tertiary, unclassified, service
+- living_street, pedestrian, track, path, footway
+- secondary, primary (for connectivity)
 
 ### Supported Shapes
 
-| Shape | Distance Ratio | Min Radius | Accuracy |
-|-------|---------------|------------|----------|
-| Heart | 10.5 | 800m | ~15% error |
-| Star | 15.0 | 600m | ~5% error |
-| Circle | 19.5 | 400m | ~25% error |
-| Square | 18.5 | 400m | ~12% error |
+| Shape | Distance Ratio | Min Radius | Typical Error |
+|-------|---------------|------------|---------------|
+| Heart | 10.5 | 800m | ~15% |
+| Star | 15.0 | 600m | ~5% |
+| Circle | 19.5 | 400m | ~25% |
+| Square | 18.5 | 400m | ~12% |
 
 ### Core Components
 
 **Frontend (`app/page.tsx`)**
 - Main interface with location selection, shape picker, distance input
 - Uses React 19 with TypeScript, Tailwind CSS, Radix UI
-- Automatically uses curve-following router for Munich locations
-- Displays route with "Rideable Route" badge and segment/node counts
+- Calls `/api/optimized-route` for worldwide routing
+- Displays quality metrics, graph stats, and routing info
+
+**OSM Fetcher (`lib/graph/osm-fetcher.ts`)**
+- `calculateBBox()` - Compute bounding box from coordinates with padding
+- `fetchAndBuildGraph()` - Fetch OSM data, build graph, cache result
+- `clearCache()` / `getCacheStats()` - Cache management
+
+**Graph Builder (`lib/graph/builder.ts`)**
+- Converts GeoJSON street data to graphology graph
+- Supports both file paths (streaming) and in-memory GeoJSON objects
+- 2-pass approach: find intersections, then build edges
+- Creates nodes only at intersections for efficiency
 
 **Curve Router (`lib/graph/curve-router.ts`)**
 - `findCurveFollowingRoute()` - Direction-aware A* with corridor constraint
 - `routeShapeWithCurveFollowing()` - Route through all waypoints
-- `findNodesInCorridor()` - Filter graph to corridor around shape
-- `calculateTangentDirection()` - Get expected direction at each point
-
-**Graph Builder (`lib/graph/builder.ts`)**
-- Converts GeoJSON street data to graphology graph
-- 2-pass streaming approach for large files
-- Creates nodes only at intersections
-- ~88K nodes, ~94K edges for Munich
+- `segmentsToGeoJSON()` - Convert segments to GeoJSON output
 
 **Spatial Index (`lib/graph/spatial-index.ts`)**
 - RBush-based spatial indexing for fast nearest-node queries
+- `findNearest()` - Single nearest node
+- `findKNearest()` - K nearest nodes (for connectivity-aware snapping)
 - Filters to largest connected component
-- O(log n) lookups
 
 **Shape Library (`lib/shapes/`)**
 - `heart.ts`, `circle.ts`, `star.ts`, `square.ts`
@@ -94,34 +142,37 @@ Strava Art is a Next.js 15 application that generates rideable bike/run routes s
 stravart/
 ├── app/
 │   ├── api/
-│   │   ├── shape-route/route.ts  # Curve-following router (Munich)
-│   │   ├── fit-fetch/route.js    # Optimization fallback (worldwide)
-│   │   └── stripe/               # Payment endpoints
-│   ├── page.tsx                  # Main UI
+│   │   ├── optimized-route/route.ts  # Hybrid router (worldwide, primary)
+│   │   ├── shape-route/route.ts      # Curve-following (Munich only)
+│   │   ├── fit-fetch/route.js        # Optimization only (points)
+│   │   └── stripe/                   # Payment endpoints
+│   ├── page.tsx                      # Main UI
 │   └── layout.tsx
 ├── components/
-│   ├── GeoMap.tsx               # Leaflet map
-│   ├── DrawingBoard.tsx         # Custom shape drawing
-│   └── ui/                      # Radix UI components
+│   ├── GeoMap.tsx                   # Leaflet map
+│   ├── DrawingBoard.tsx             # Custom shape drawing
+│   └── ui/                          # Radix UI components
 ├── lib/
 │   ├── graph/
-│   │   ├── curve-router.ts      # Curve-following A* algorithm
-│   │   ├── builder.ts           # GeoJSON → Graph
-│   │   ├── spatial-index.ts     # RBush indexing
+│   │   ├── osm-fetcher.ts           # Dynamic OSM data fetching
+│   │   ├── curve-router.ts          # Curve-following A* algorithm
+│   │   ├── builder.ts               # GeoJSON → Graph (file or object)
+│   │   ├── spatial-index.ts         # RBush indexing
 │   │   ├── shape-to-waypoints.ts
-│   │   ├── router.ts            # Standard A* (not for shapes)
+│   │   ├── router.ts                # Standard A*
 │   │   ├── types.ts
 │   │   └── utils.ts
-│   ├── shapes/                  # Shape generators
+│   ├── shapes/                      # Shape generators
 │   └── payment.ts
 ├── fixtures/
-│   └── munich-streets.geojson   # Munich street network (75MB)
+│   └── munich-streets.geojson       # Munich street network (legacy, 75MB)
 ├── docs/
-│   └── ROUTING_STRATEGY.md      # Detailed routing documentation
+│   └── ROUTING_STRATEGY.md          # Detailed routing documentation
 ├── scripts/
-│   ├── test-curve-router.ts     # Test curve-following router
-│   └── build-bavaria-graph.ts   # Build graph from GeoJSON
-└── test-outputs/                # Generated test routes
+│   ├── fetch-osm-streets.js         # Fetch OSM data to fixture file
+│   ├── test-curve-router.ts         # Test curve-following router
+│   └── build-bavaria-graph.ts       # Build graph from GeoJSON
+└── test-outputs/                    # Generated test routes
 ```
 
 ### Technology Stack
@@ -131,30 +182,35 @@ stravart/
 - **Maps**: Leaflet.js, react-leaflet
 - **Graph**: graphology, graphology-shortest-path
 - **Spatial**: RBush, Turf.js
+- **Data**: OpenStreetMap via Overpass API
 - **Payment**: Stripe
 
-### Key Parameters (Curve Router)
+### Key Parameters
+
+**Optimized Route API:**
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `corridorWidthRatio` | 0.20 | Corridor as fraction of radius |
-| `directionPenalty` | 0.6 | Penalty for wrong direction (0-1) |
 | `waypointCount` | 40 | Points around shape |
+| `corridorWidth` | 150-300m | Adaptive based on scale |
+| `directionPenalty` | 0.3-0.5 | Penalty for wrong direction |
+| `bboxPadding` | 500m+ | Extra area fetched for routing |
 
 ### Performance
 
-| Metric | Value |
-|--------|-------|
-| Graph build | ~17s (first request, cached) |
-| Routing | 50-100ms |
-| Success rate | 95-100% segments |
-| Memory | ~500MB |
+| Metric | Worldwide (dynamic) | Munich (cached fixture) |
+|--------|---------------------|------------------------|
+| First request | 3-8s (fetch + build) | ~17s (build from 75MB) |
+| Cached request | 0.3-0.5s | 50-100ms |
+| Graph size | 1K-20K nodes (varies) | ~88K nodes |
+| Memory | ~50-200MB per cache | ~500MB |
 
 ### Supported Regions
 
-Currently only **Munich, Germany** (20km radius):
-- Lat: 47.9549 to 48.3153
-- Lng: 11.3120 to 11.8520
+**Worldwide** via dynamic OSM fetching:
+- Any location with OpenStreetMap coverage
+- Automatic bbox calculation based on shape size
+- In-memory caching for repeated requests in same area
 
 ### Environment Variables
 
