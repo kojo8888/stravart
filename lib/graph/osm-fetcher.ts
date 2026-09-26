@@ -97,32 +97,56 @@ out geom;
     `.trim()
 }
 
+// Overpass API endpoints (primary + fallbacks)
+// Note: overpass-api.de sometimes returns 406, so we prioritize mirrors
+const OVERPASS_ENDPOINTS = [
+    'https://overpass.kumi.systems/api/interpreter',
+    'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+    'https://overpass-api.de/api/interpreter',
+]
+
 /**
- * Fetch data from Overpass API
+ * Fetch data from Overpass API with fallback endpoints
  */
 async function fetchFromOverpass(query: string): Promise<any> {
-    const url = 'https://overpass-api.de/api/interpreter'
-
     console.log('🌍 [OSM] Fetching from Overpass API...')
     const startTime = Date.now()
 
-    const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: query,
-    })
+    let lastError: Error | null = null
 
-    if (!response.ok) {
-        throw new Error(`Overpass API error: ${response.status} ${response.statusText}`)
+    for (const endpoint of OVERPASS_ENDPOINTS) {
+        try {
+            console.log(`   Trying: ${endpoint}`)
+
+            // Use FormData-style encoding that matches curl --data-urlencode
+            const body = 'data=' + encodeURIComponent(query)
+
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body,
+            })
+
+            if (response.ok) {
+                const data = await response.json()
+                const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+                console.log(`✅ [OSM] Fetched in ${elapsed}s from ${endpoint}`)
+                return data
+            }
+
+            // Log the error but try next endpoint
+            console.log(`   ❌ ${endpoint}: ${response.status} ${response.statusText}`)
+            lastError = new Error(`${response.status} ${response.statusText}`)
+
+        } catch (err: any) {
+            console.log(`   ❌ ${endpoint}: ${err.message}`)
+            lastError = err
+        }
     }
 
-    const data = await response.json()
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
-    console.log(`✅ [OSM] Fetched in ${elapsed}s`)
-
-    return data
+    throw new Error(`All Overpass endpoints failed. Last error: ${lastError?.message || 'Unknown'}`)
 }
 
 /**

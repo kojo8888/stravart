@@ -99,25 +99,48 @@ const Home: React.FC = () => {
     }, [])
 
     const getUserLocation = () => {
-        if (navigator.geolocation) {
-            navigator.geolocation.getCurrentPosition(
-                (position) => {
-                    const loc = {
-                        lat: position.coords.latitude,
-                        lng: position.coords.longitude,
-                    }
-                    console.log('[FRONTEND] User location acquired:', loc)
-                    setUserLocation(loc)
-                },
-                (error) => {
-                    console.error('Geolocation error:', error)
-                    alert('Could not get your location. Please search for a place instead.')
-                }
-            )
-        } else {
+        if (!navigator.geolocation) {
             alert('Geolocation is not supported by your browser.')
             console.warn('[FRONTEND] Geolocation not supported.')
+            return
         }
+
+        // Check if running on secure context (HTTPS or localhost)
+        if (!window.isSecureContext) {
+            alert('Geolocation requires HTTPS. Please use localhost or a secure connection.')
+            console.error('[FRONTEND] Not in secure context - geolocation blocked')
+            return
+        }
+
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                const loc = {
+                    lat: position.coords.latitude,
+                    lng: position.coords.longitude,
+                }
+                console.log('[FRONTEND] User location acquired:', loc)
+                setUserLocation(loc)
+            },
+            (error) => {
+                console.error('Geolocation error:', error)
+                let message = 'Could not get your location. '
+                switch (error.code) {
+                    case error.PERMISSION_DENIED:
+                        message += 'Permission denied. Please allow location access in your browser settings.'
+                        break
+                    case error.POSITION_UNAVAILABLE:
+                        message += 'Location unavailable. Please check your device location settings.'
+                        break
+                    case error.TIMEOUT:
+                        message += 'Request timed out. Please try again.'
+                        break
+                    default:
+                        message += 'Please search for a place instead.'
+                }
+                alert(message)
+            },
+            { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 }
+        )
     }
 
     const handleSearchPlace = async () => {
