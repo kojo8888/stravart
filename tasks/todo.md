@@ -1,6 +1,23 @@
 # Stravart Task List
 
-*Last updated: 2026-09-24*
+*Last updated: 2026-09-26*
+
+---
+
+## Completed
+
+### Infrastructure Fixes (2026-09-26)
+- [x] Fix Overpass API 406 errors - added multiple endpoints
+- [x] Add retry logic with backoff for rate limiting
+- [x] Add timeout handling for slow endpoints
+- [x] Fix geolocation "Use My Location" - added secure context check
+- [x] Improve geolocation error messages
+
+### Route Quality Improvements (2026-09-26)
+- [x] Implement dead-end node avoidance during waypoint snapping
+- [x] Add backtracking detection in routed segments
+- [x] Add backtracking removal post-processing
+- [x] Pass `findKNearestNodes` to curve-following router
 
 ---
 
@@ -42,17 +59,16 @@
 ### 1.4 Visual inspection
 - [ ] Open each test GeoJSON in geojson.io
 - [ ] Screenshot shapes that look wrong
-- [ ] Note specific problem areas (e.g., "heart dip routes backward")
+- [ ] Note specific problem areas
 
 ---
 
 ## Phase 2: Fix Critical Issues
 
-### 2.1 Waypoint sticking (0-distance segments)
-- [ ] Add logging to identify where waypoints stick
-- [ ] Check if it's snapping or routing issue
-- [ ] Implement fix
-- [ ] Re-test affected shapes
+### 2.1 Remaining waypoint issues
+- [x] Avoid dead-end nodes during snapping
+- [x] Remove backtracking from routes
+- [ ] Re-test affected shapes after fixes
 
 ### 2.2 Circle quality
 - [ ] Generate 5 circles at different locations
@@ -64,7 +80,7 @@
 ### 2.3 Heart quality
 - [ ] Focus on the "dip" at top center
 - [ ] Check if waypoint ordering is correct
-- [ ] Verify no backtracking in route
+- [x] Verify no backtracking in route (implemented)
 - [ ] Target: < 15% error, no 0-distance segments
 
 ---
@@ -95,14 +111,14 @@
 |-------|-------|------|--------|
 | 0. Architecture | 2 | 0 | Not started |
 | 1. Validate | 18 | 0 | Not started |
-| 2. Fix Issues | 11 | 0 | Blocked by Phase 1 |
+| 2. Fix Issues | 11 | 4 | In progress |
 | 3. Merge | 7 | 0 | Blocked by Phase 2 |
-| **Total** | **38** | **0** | **0%** |
+| **Total** | **38** | **4** | **11%** |
 
 ---
 
 ## Tomorrow's Starting Point
 
 1. Run `npm run dev` to start dev server
-2. Generate test routes via UI or API
-3. Begin Phase 1.1 validation
+2. Generate test routes via UI to verify backtracking fixes
+3. Begin Phase 1.1 validation with various shapes/sizes

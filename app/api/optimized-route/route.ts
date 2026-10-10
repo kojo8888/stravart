@@ -13,7 +13,10 @@
 import { NextResponse } from 'next/server'
 import {
     routeShapeWithCurveFollowing,
-    segmentsToGeoJSON
+    segmentsToGeoJSON,
+    calculateDirection,
+    angularDifference,
+    detectUTurns
 } from '@/lib/graph/curve-router'
 import { haversineDistance } from '@/lib/graph/utils'
 import { fetchAndBuildGraph, calculateBBox } from '@/lib/graph/osm-fetcher'
@@ -31,6 +34,7 @@ interface QualityMetrics {
     suspiciousSegments: number  // count of segments with detour > 5x
     fallbackCount: number       // segments that needed expanded corridor
     totalSegments: number
+    uTurnCount: number          // count of detected U-turns
 }
 
 interface QualityThresholds {
@@ -38,6 +42,7 @@ interface QualityThresholds {
     maxDetourRatio: number      // e.g., 6.0 (6x)
     maxSuspiciousSegments: number // e.g., 2
     maxFallbackPercent: number  // e.g., 0.30 (30%)
+    maxUTurns: number           // e.g., 2
 }
 
 const DEFAULT_THRESHOLDS: QualityThresholds = {
@@ -45,6 +50,7 @@ const DEFAULT_THRESHOLDS: QualityThresholds = {
     maxDetourRatio: 6.0,         // No segment should be > 6x straight-line
     maxSuspiciousSegments: 2,    // Max 2 suspicious segments
     maxFallbackPercent: 0.30,    // Max 30% of segments needing fallback
+    maxUTurns: 8,                // Max 8 U-turns (about 20% of typical 40 waypoints)
 }
 
 /**
@@ -73,6 +79,10 @@ function assessQuality(
         issues.push(`Fallback rate ${(fallbackPercent * 100).toFixed(0)}% > ${(thresholds.maxFallbackPercent * 100).toFixed(0)}%`)
     }
 
+    if (metrics.uTurnCount > thresholds.maxUTurns) {
+        issues.push(`${metrics.uTurnCount} U-turns > ${thresholds.maxUTurns}`)
+    }
+
     // Calculate quality score (lower is better)
     // Weighted combination of metrics
     const score =
@@ -80,7 +90,8 @@ function assessQuality(
         metrics.maxDetourRatio * 5 +            // Max detour weight: 5
         metrics.avgDetourRatio * 10 +           // Avg detour weight: 10
         metrics.suspiciousSegments * 20 +       // Suspicious segment penalty: 20 each
-        fallbackPercent * 30                    // Fallback rate weight: 30
+        fallbackPercent * 30 +                  // Fallback rate weight: 30
+        metrics.uTurnCount * 25                 // U-turn penalty: 25 each
 
     return {
         passed: issues.length === 0,
@@ -93,7 +104,7 @@ function assessQuality(
  * Calculate quality metrics from route segments
  */
 function calculateMetrics(
-    segments: Array<{ distance: number; coordinates: Array<{ lat: number; lng: number }> }>,
+    segments: Array<{ distance: number; coordinates: Array<{ lat: number; lng: number }>; nodeIds: string[] }>,
     targetDistanceKm: number,
     waypointCoords: Array<{ lat: number; lng: number }>
 ): QualityMetrics {
@@ -102,6 +113,7 @@ function calculateMetrics(
     let totalDetourRatio = 0
     let suspiciousSegments = 0
     let fallbackCount = 0  // We'll estimate this from high detour ratios
+    let uTurnCount = 0
 
     for (let i = 0; i < segments.length; i++) {
         const seg = segments[i]
@@ -126,6 +138,9 @@ function calculateMetrics(
         if (detourRatio > 3) {
             fallbackCount++
         }
+
+        // Detect U-turns in this segment
+        uTurnCount += detectUTurns({ nodeIds: seg.nodeIds, coordinates: seg.coordinates, distance: seg.distance })
     }
 
     const actualDistanceKm = totalDistance / 1000
@@ -138,7 +153,8 @@ function calculateMetrics(
         avgDetourRatio,
         suspiciousSegments,
         fallbackCount,
-        totalSegments: segments.length
+        totalSegments: segments.length,
+        uTurnCount
     }
 }
 
@@ -469,7 +485,7 @@ function generateRouteWithRotation(
 
     for (let i = 0; i < routingWaypoints.length; i++) {
         const wp = routingWaypoints[i]
-        const candidates = spatialIndex.findKNearest(wp, 5)
+        const candidates = spatialIndex.findKNearest(wp, 10)  // More candidates for better direction matching
 
         if (candidates.length === 0) continue
 
@@ -491,22 +507,57 @@ function generateRouteWithRotation(
         const prevCoord = { lat: prevSnapped.lat, lng: prevSnapped.lng }
         const idealWpDistance = haversineDistance(routingWaypoints[i - 1] || wp, wp)
 
+        // Calculate expected direction from previous snapped waypoint to current ideal waypoint
+        const expectedDirection = calculateDirection(prevCoord, wp)
+
         let bestCandidate = candidates[0]
         let bestScore = Infinity
 
         for (const candidate of candidates) {
+            // Skip if this would snap to the same node as previous waypoint
+            if (candidate.nodeId === prevSnapped.nodeId) {
+                continue
+            }
+
             const candidateAttrs = graph.getNodeAttributes(candidate.nodeId)
             const candidateCoord = { lat: candidateAttrs.lat, lng: candidateAttrs.lng }
             const distFromPrev = haversineDistance(prevCoord, candidateCoord)
+
+            // Distance penalty for nodes that are too far from previous
             const distancePenalty = distFromPrev > idealWpDistance * 3
                 ? (distFromPrev - idealWpDistance) * 2
                 : 0
-            const score = candidate.distance + distancePenalty
+
+            // Direction penalty: prefer candidates in the forward direction along the shape
+            // Calculate direction from previous snapped waypoint to this candidate
+            const candidateDirection = calculateDirection(prevCoord, candidateCoord)
+            const angleDiff = angularDifference(expectedDirection, candidateDirection)
+
+            // Moderate penalty for candidates off the expected direction
+            // Not too aggressive to avoid forcing bad snaps
+            let directionScore = 0
+            if (angleDiff > Math.PI * 2 / 3) {
+                // More than 120° off (going backward) - strong penalty
+                directionScore = angleDiff * 80
+            } else if (angleDiff > Math.PI / 2) {
+                // 90-120° off - moderate penalty
+                directionScore = angleDiff * 40
+            } else if (angleDiff > Math.PI / 4) {
+                // 45-90° off - light penalty
+                directionScore = angleDiff * 15
+            }
+
+            const score = candidate.distance + distancePenalty + directionScore
 
             if (score < bestScore) {
                 bestScore = score
                 bestCandidate = candidate
             }
+        }
+
+        // If all candidates were skipped (same as prev), just use the closest
+        if (bestScore === Infinity) {
+            bestCandidate = candidates.find(c => c.nodeId !== prevSnapped.nodeId) || candidates[0]
         }
 
         const nodeAttrs = graph.getNodeAttributes(bestCandidate.nodeId)
@@ -532,8 +583,13 @@ function generateRouteWithRotation(
     )
 
     // Calculate corridor and penalty
-    const corridorWidth = Math.min(300, Math.max(150, params.scale * 0.12))
-    const directionPenalty = Math.min(0.5, 0.3 + (targetDistanceKm / 150))
+    // Balanced corridor: tight enough to prevent large detours, wide enough for connectivity
+    const waypointSpacing = (params.scale * 2 * Math.PI) / waypointCount
+    // Corridor should be 60-80% of waypoint spacing, minimum 100m, capped at 200m
+    const corridorWidth = Math.min(200, Math.max(100, waypointSpacing * 0.7))
+
+    // Much stronger direction penalty to prevent U-turns and backtracking
+    const directionPenalty = Math.min(1.5, 1.0 + (targetDistanceKm / 100))
 
     // Route
     const snappedCoords = snappedWaypoints.map(wp => ({ lat: wp.lat, lng: wp.lng }))
@@ -542,7 +598,12 @@ function generateRouteWithRotation(
         snappedCoords,
         denseShapePoints,
         (coord) => spatialIndex.findNearest(coord),
-        { corridorWidth, directionPenalty, closeLoop: true }
+        {
+            corridorWidth,
+            directionPenalty,
+            closeLoop: true,
+            findKNearestNodes: (coord, k) => spatialIndex.findKNearest(coord, k)
+        }
     )
 
     if (!segments || segments.length === 0) return null
@@ -820,6 +881,7 @@ export async function POST(req: Request) {
                 maxDetourRatio: Math.round(bestResult.metrics.maxDetourRatio * 10) / 10,
                 avgDetourRatio: Math.round(bestResult.metrics.avgDetourRatio * 10) / 10,
                 suspiciousSegments: bestResult.metrics.suspiciousSegments,
+                uTurnCount: bestResult.metrics.uTurnCount,
                 attemptCount,
             }
         }

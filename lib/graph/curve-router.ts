@@ -76,6 +76,26 @@ export function angularDifference(angle1: number, angle2: number): number {
 }
 
 /**
+ * Blend two directions with a weight
+ * @param dir1 First direction (radians)
+ * @param dir2 Second direction (radians)
+ * @param weight Weight for dir1 (0-1), dir2 gets (1-weight)
+ * @returns Blended direction
+ */
+function blendDirections(dir1: number, dir2: number, weight: number): number {
+    // Convert to unit vectors
+    const x1 = Math.cos(dir1), y1 = Math.sin(dir1)
+    const x2 = Math.cos(dir2), y2 = Math.sin(dir2)
+
+    // Weighted blend
+    const x = x1 * weight + x2 * (1 - weight)
+    const y = y1 * weight + y2 * (1 - weight)
+
+    // Convert back to angle
+    return Math.atan2(y, x)
+}
+
+/**
  * Find the minimum distance from a point to the shape outline
  */
 export function distanceToShapeOutline(
@@ -250,7 +270,15 @@ export function findCurveFollowingRoute(
 
         const currentAttrs = graph.getNodeAttributes(current)
         const currentCoord = { lat: currentAttrs.lat, lng: currentAttrs.lng }
-        const expectedDir = getExpectedDirection(currentCoord, shapePoints)
+
+        // Use goal direction as the primary expected direction
+        // This guides routing towards the destination while corridor keeps it near shape
+        const goalDir = calculateDirection(currentCoord, endCoord)
+        // Also consider shape tangent for smoothness
+        const shapeDir = getExpectedDirection(currentCoord, shapePoints)
+        // Blend: prioritize goal direction but consider shape tangent
+        // This helps follow the shape while making progress toward goal
+        const blendedExpectedDir = blendDirections(goalDir, shapeDir, 0.7)  // 70% goal, 30% shape
 
         // Explore neighbors
         for (const neighbor of graph.neighbors(current)) {
@@ -272,17 +300,28 @@ export function findCurveFollowingRoute(
 
             // Calculate direction penalty
             const actualDir = calculateDirection(currentCoord, neighborCoord)
-            const dirDiff = angularDifference(actualDir, expectedDir)
+            const dirDiff = angularDifference(actualDir, blendedExpectedDir)
 
-            // Penalty: 1.0 if aligned, up to (1 + directionPenalty) if perpendicular
-            // Higher penalty for going backwards (> π/2 difference)
+            // Strong penalty system to prevent U-turns and backtracking:
+            // - Aligned with shape: penalty = 1.0 (no penalty)
+            // - Up to 45° off: gradual penalty up to 1.5x
+            // - 45-90° off: steeper penalty up to 3x
+            // - 90-135° off: heavy penalty up to 5x
+            // - >135° off (nearly backward): extreme exponential penalty
             let penalty = 1.0
-            if (dirDiff > Math.PI / 2) {
-                // Going backwards - heavy penalty
-                penalty = 1.0 + directionPenalty * 2
+            if (dirDiff > Math.PI * 0.75) {
+                // Going mostly backward (>135°) - extreme exponential penalty
+                // This makes backward movement essentially impossible
+                penalty = 5.0 + (dirDiff - Math.PI * 0.75) * 12.0
+            } else if (dirDiff > Math.PI / 2) {
+                // Going backward (90-135°) - heavy penalty
+                penalty = 3.0 + directionPenalty * 4 * ((dirDiff - Math.PI / 2) / (Math.PI / 4))
+            } else if (dirDiff > Math.PI / 4) {
+                // Significantly off (45-90°) - moderate penalty
+                penalty = 1.5 + directionPenalty * 3 * ((dirDiff - Math.PI / 4) / (Math.PI / 4))
             } else {
-                // Scale penalty based on deviation (0 to π/2 -> 1.0 to 1+penalty)
-                penalty = 1.0 + directionPenalty * (dirDiff / (Math.PI / 2))
+                // Forward-ish (0-45°) - gradual penalty
+                penalty = 1.0 + directionPenalty * (dirDiff / (Math.PI / 4))
             }
 
             const tentativeG = gScore.get(current)! + edgeDistance * penalty
@@ -403,6 +442,40 @@ export function findUnconstrainedRoute(
 }
 
 /**
+ * Check if a node is a dead-end (degree 1) or near-dead-end (degree 2 with one being same street)
+ */
+function isDeadEndNode(graph: StreetGraph, nodeId: string): boolean {
+    const degree = graph.degree(nodeId)
+    return degree <= 1
+}
+
+/**
+ * Find a good snap point that avoids dead-ends
+ */
+function findBestSnapNode(
+    graph: StreetGraph,
+    candidates: Array<{ nodeId: string; distance: number }>,
+    corridorNodes: Set<string>
+): { nodeId: string; distance: number } | null {
+    // First pass: find candidates that are not dead-ends and in corridor
+    for (const candidate of candidates) {
+        if (!isDeadEndNode(graph, candidate.nodeId) && corridorNodes.has(candidate.nodeId)) {
+            return candidate
+        }
+    }
+
+    // Second pass: find any non-dead-end
+    for (const candidate of candidates) {
+        if (!isDeadEndNode(graph, candidate.nodeId)) {
+            return candidate
+        }
+    }
+
+    // Fallback: return closest even if dead-end
+    return candidates[0] || null
+}
+
+/**
  * Route through all waypoints using curve-following algorithm
  */
 export function routeShapeWithCurveFollowing(
@@ -415,13 +488,15 @@ export function routeShapeWithCurveFollowing(
         directionPenalty?: number
         closeLoop?: boolean
         onProgress?: (current: number, total: number) => void
+        findKNearestNodes?: (coord: Coordinate, k: number) => Array<{ nodeId: string; distance: number }>
     } = {}
 ): RoutePath[] | null {
     const {
         corridorWidth = 200,
         directionPenalty = 0.5,
         closeLoop = true,
-        onProgress
+        onProgress,
+        findKNearestNodes
     } = options
 
     if (waypoints.length < 2) {
@@ -438,37 +513,66 @@ export function routeShapeWithCurveFollowing(
     const corridorNodes = findNodesInCorridor(graph, shapePoints, corridorWidth)
     console.log(`   ${corridorNodes.size} nodes in corridor`)
 
-    // Snap waypoints to nodes - prefer nodes within corridor
-    console.log('📍 Snapping waypoints to street network...')
+    // Snap waypoints to nodes - prefer nodes within corridor and NOT dead-ends
+    console.log('📍 Snapping waypoints to street network (avoiding dead-ends)...')
     const waypointNodes: string[] = []
     const snapDistances: number[] = []
     let farSnaps = 0
     let outOfCorridorSnaps = 0
+    let deadEndsAvoided = 0
 
     for (let i = 0; i < waypoints.length; i++) {
         const wp = waypoints[i]
-        const nearest = findNearestNode(wp)
-        if (!nearest) {
+
+        let selectedNode: { nodeId: string; distance: number } | null = null
+
+        // If we have access to K-nearest, use it to find non-dead-end nodes
+        if (findKNearestNodes) {
+            const candidates = findKNearestNodes(wp, 8) // Get 8 nearest candidates
+            const nearest = candidates[0]
+
+            if (nearest && isDeadEndNode(graph, nearest.nodeId)) {
+                // Nearest is a dead-end, find a better option
+                const better = findBestSnapNode(graph, candidates, corridorNodes)
+                if (better && better.nodeId !== nearest.nodeId) {
+                    console.log(`   🔄 WP${i + 1}: Avoided dead-end, using node ${better.distance.toFixed(0)}m away instead of ${nearest.distance.toFixed(0)}m`)
+                    selectedNode = better
+                    deadEndsAvoided++
+                } else {
+                    selectedNode = nearest
+                }
+            } else {
+                selectedNode = nearest
+            }
+        } else {
+            selectedNode = findNearestNode(wp)
+        }
+
+        if (!selectedNode) {
             console.error(`Could not find node near waypoint ${i + 1} (${wp.lat}, ${wp.lng})`)
             return null
         }
 
         // Check if snapped node is in corridor
-        const isInCorridor = corridorNodes.has(nearest.nodeId)
+        const isInCorridor = corridorNodes.has(selectedNode.nodeId)
         if (!isInCorridor) {
             outOfCorridorSnaps++
             // Add the node to corridor anyway so routing can reach it
-            corridorNodes.add(nearest.nodeId)
+            corridorNodes.add(selectedNode.nodeId)
         }
 
         // Track snap distances
-        snapDistances.push(nearest.distance)
-        if (nearest.distance > 200) { // More than 200m snap
+        snapDistances.push(selectedNode.distance)
+        if (selectedNode.distance > 200) { // More than 200m snap
             farSnaps++
-            console.log(`   ⚠️ WP${i + 1}: snapped ${nearest.distance.toFixed(0)}m to ${nearest.nodeId}${!isInCorridor ? ' (outside corridor!)' : ''}`)
+            console.log(`   ⚠️ WP${i + 1}: snapped ${selectedNode.distance.toFixed(0)}m to ${selectedNode.nodeId}${!isInCorridor ? ' (outside corridor!)' : ''}`)
         }
 
-        waypointNodes.push(nearest.nodeId)
+        waypointNodes.push(selectedNode.nodeId)
+    }
+
+    if (deadEndsAvoided > 0) {
+        console.log(`   ✅ Avoided ${deadEndsAvoided} dead-end nodes`)
     }
 
     // Summary of snapping quality
@@ -573,39 +677,56 @@ export function routeShapeWithCurveFollowing(
         if (!route) {
             console.warn(`   ⚠️ No route found for segment ${i + 1}`)
 
-            // Fallback 1: Try with expanded corridor (2x)
-            console.log(`   Retrying with 2x corridor...`)
-            let expandedCorridor = findNodesInCorridor(graph, shapePoints, corridorWidth * 2)
+            // Fallback 1: Try with slightly expanded corridor (1.5x) but KEEP direction penalty
+            console.log(`   Retrying with 1.5x corridor (maintaining direction constraint)...`)
+            let expandedCorridor = findNodesInCorridor(graph, shapePoints, corridorWidth * 1.5)
             let retryRoute = findCurveFollowingRoute(
                 graph,
                 fromNode,
                 toNode,
                 shapePoints,
                 {
-                    corridorWidth: corridorWidth * 2,
-                    directionPenalty: directionPenalty * 0.5,
+                    corridorWidth: corridorWidth * 1.5,
+                    directionPenalty: directionPenalty,  // Keep strong direction penalty
                     allowedNodes: expandedCorridor
                 }
             )
 
-            // Fallback 2: Try with very wide corridor (4x)
+            // Fallback 2: Try with 2x corridor, slightly reduced penalty
             if (!retryRoute) {
-                console.log(`   Retrying with 4x corridor...`)
-                expandedCorridor = findNodesInCorridor(graph, shapePoints, corridorWidth * 4)
+                console.log(`   Retrying with 2x corridor...`)
+                expandedCorridor = findNodesInCorridor(graph, shapePoints, corridorWidth * 2)
                 retryRoute = findCurveFollowingRoute(
                     graph,
                     fromNode,
                     toNode,
                     shapePoints,
                     {
-                        corridorWidth: corridorWidth * 4,
-                        directionPenalty: 0.2, // Very relaxed
+                        corridorWidth: corridorWidth * 2,
+                        directionPenalty: directionPenalty * 0.8,  // Only slightly reduced
                         allowedNodes: expandedCorridor
                     }
                 )
             }
 
-            // Fallback 3: Try unconstrained routing (no corridor limit)
+            // Fallback 3: Try with 3x corridor
+            if (!retryRoute) {
+                console.log(`   Retrying with 3x corridor...`)
+                expandedCorridor = findNodesInCorridor(graph, shapePoints, corridorWidth * 3)
+                retryRoute = findCurveFollowingRoute(
+                    graph,
+                    fromNode,
+                    toNode,
+                    shapePoints,
+                    {
+                        corridorWidth: corridorWidth * 3,
+                        directionPenalty: directionPenalty * 0.6,  // Moderately reduced
+                        allowedNodes: expandedCorridor
+                    }
+                )
+            }
+
+            // Fallback 4: Try unconstrained routing only as last resort
             if (!retryRoute) {
                 console.log(`   Retrying with unconstrained routing...`)
                 retryRoute = findUnconstrainedRoute(graph, fromNode, toNode)
@@ -656,11 +777,179 @@ export function routeShapeWithCurveFollowing(
         return null
     }
 
-    const totalDistance = segments.reduce((sum, s) => sum + s.distance, 0)
-    console.log(`✅ Routed ${segments.length}/${segmentCount} segments`)
+    // Post-process: Remove backtracking and detect U-turns
+    console.log('🔄 Post-processing: Detecting backtracking and U-turns...')
+    let totalUTurns = 0
+    const cleanedSegments = segments.map((segment, segIdx) => {
+        const cleaned = removeBacktracking(segment)
+        if (cleaned.distance < segment.distance) {
+            const saved = segment.distance - cleaned.distance
+            console.log(`   Segment ${segIdx + 1}: Removed ${(saved / 1000).toFixed(2)}km backtracking`)
+        }
+
+        // Detect remaining U-turns
+        const uturns = detectUTurns(cleaned)
+        if (uturns > 0) {
+            console.log(`   ⚠️ Segment ${segIdx + 1}: ${uturns} U-turn(s) detected`)
+            totalUTurns += uturns
+        }
+
+        return cleaned
+    })
+
+    const totalDistance = cleanedSegments.reduce((sum, s) => sum + s.distance, 0)
+    const originalDistance = segments.reduce((sum, s) => sum + s.distance, 0)
+
+    if (totalDistance < originalDistance) {
+        console.log(`   ✅ Removed ${((originalDistance - totalDistance) / 1000).toFixed(2)}km total backtracking`)
+    }
+
+    if (totalUTurns > 0) {
+        console.log(`   ⚠️ Total U-turns detected: ${totalUTurns}`)
+    } else {
+        console.log(`   ✅ No U-turns detected`)
+    }
+
+    console.log(`✅ Routed ${cleanedSegments.length}/${segmentCount} segments`)
     console.log(`📏 Total distance: ${(totalDistance / 1000).toFixed(2)}km`)
 
-    return segments
+    return cleanedSegments
+}
+
+/**
+ * Remove backtracking from a route segment
+ * Detects when a route visits a node twice (goes down a street and returns)
+ * and short-circuits to remove the backtracking portion
+ */
+function removeBacktracking(segment: RoutePath): RoutePath {
+    const { nodeIds, coordinates, distance } = segment
+
+    if (nodeIds.length <= 2) {
+        return segment
+    }
+
+    // Find nodes that appear more than once
+    const nodeFirstIndex = new Map<string, number>()
+    const duplicates: Array<{ nodeId: string; firstIdx: number; secondIdx: number }> = []
+
+    for (let i = 0; i < nodeIds.length; i++) {
+        const nodeId = nodeIds[i]
+        if (nodeFirstIndex.has(nodeId)) {
+            duplicates.push({
+                nodeId,
+                firstIdx: nodeFirstIndex.get(nodeId)!,
+                secondIdx: i
+            })
+        } else {
+            nodeFirstIndex.set(nodeId, i)
+        }
+    }
+
+    if (duplicates.length === 0) {
+        return segment // No backtracking detected
+    }
+
+    // Remove the largest backtracking segment first
+    // Sort by size of backtracking (secondIdx - firstIdx)
+    duplicates.sort((a, b) => (b.secondIdx - b.firstIdx) - (a.secondIdx - a.firstIdx))
+
+    // Remove the backtracking: keep nodes before firstIdx, then skip to secondIdx
+    const duplicate = duplicates[0]
+    const newNodeIds = [
+        ...nodeIds.slice(0, duplicate.firstIdx + 1),
+        ...nodeIds.slice(duplicate.secondIdx + 1)
+    ]
+    const newCoordinates = [
+        ...coordinates.slice(0, duplicate.firstIdx + 1),
+        ...coordinates.slice(duplicate.secondIdx + 1)
+    ]
+
+    // Recalculate distance
+    let newDistance = 0
+    for (let i = 0; i < newCoordinates.length - 1; i++) {
+        newDistance += haversineDistance(newCoordinates[i], newCoordinates[i + 1])
+    }
+
+    const result: RoutePath = {
+        nodeIds: newNodeIds,
+        coordinates: newCoordinates,
+        distance: newDistance
+    }
+
+    // Recursively remove more backtracking if present
+    if (duplicates.length > 1) {
+        return removeBacktracking(result)
+    }
+
+    return result
+}
+
+/**
+ * Detect U-turns in a route segment
+ * A U-turn is when we detect a reversal of direction:
+ * - A single sharp turn >150° (near-reversal)
+ * - Two consecutive sharp turns (>90° each) in same rotational direction
+ * Returns the count of detected U-turns
+ */
+export function detectUTurns(segment: RoutePath): number {
+    const { coordinates } = segment
+
+    if (coordinates.length < 3) {
+        return 0
+    }
+
+    let uTurnCount = 0
+    const SHARP_SINGLE_TURN = Math.PI * 5 / 6 // 150° single turn threshold
+    const DOUBLE_TURN_EACH = Math.PI / 2 // 90° for consecutive double-turn detection
+
+    for (let i = 0; i < coordinates.length - 2; i++) {
+        // Calculate direction of edge i→i+1
+        const dir1 = calculateDirection(coordinates[i], coordinates[i + 1])
+        // Calculate direction of edge i+1→i+2
+        const dir2 = calculateDirection(coordinates[i + 1], coordinates[i + 2])
+
+        // Single sharp turn detection (near U-turn)
+        const singleTurn = angularDifference(dir1, dir2)
+        if (singleTurn > SHARP_SINGLE_TURN) {
+            uTurnCount++
+            continue // Skip to avoid double-counting
+        }
+
+        // Double-turn detection: two consecutive 90°+ turns
+        if (i < coordinates.length - 3 && singleTurn > DOUBLE_TURN_EACH) {
+            const dir3 = calculateDirection(coordinates[i + 2], coordinates[i + 3])
+            const secondTurn = angularDifference(dir2, dir3)
+            if (secondTurn > DOUBLE_TURN_EACH) {
+                // Two consecutive sharp turns - likely a U-turn pattern
+                uTurnCount++
+            }
+        }
+    }
+
+    return uTurnCount
+}
+
+/**
+ * Calculate shape deviation - how far the route deviates from the ideal shape outline
+ * Returns average deviation in meters
+ */
+export function calculateShapeDeviation(
+    segment: RoutePath,
+    shapePoints: Coordinate[]
+): number {
+    const { coordinates } = segment
+
+    if (coordinates.length === 0 || shapePoints.length === 0) {
+        return 0
+    }
+
+    let totalDeviation = 0
+    for (const coord of coordinates) {
+        const deviation = distanceToShapeOutline(coord, shapePoints)
+        totalDeviation += deviation
+    }
+
+    return totalDeviation / coordinates.length
 }
 
 /**

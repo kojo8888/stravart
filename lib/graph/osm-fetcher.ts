@@ -98,55 +98,88 @@ out geom;
 }
 
 // Overpass API endpoints (primary + fallbacks)
-// Note: overpass-api.de sometimes returns 406, so we prioritize mirrors
 const OVERPASS_ENDPOINTS = [
     'https://overpass.kumi.systems/api/interpreter',
-    'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+    'https://lz4.overpass-api.de/api/interpreter',
+    'https://z.overpass-api.de/api/interpreter',
     'https://overpass-api.de/api/interpreter',
+    'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
 ]
 
 /**
- * Fetch data from Overpass API with fallback endpoints
+ * Sleep for specified milliseconds
+ */
+function sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/**
+ * Fetch data from Overpass API with fallback endpoints and retry logic
  */
 async function fetchFromOverpass(query: string): Promise<any> {
     console.log('🌍 [OSM] Fetching from Overpass API...')
     const startTime = Date.now()
 
     let lastError: Error | null = null
+    const maxRetries = 2
 
-    for (const endpoint of OVERPASS_ENDPOINTS) {
-        try {
-            console.log(`   Trying: ${endpoint}`)
+    for (let retry = 0; retry <= maxRetries; retry++) {
+        if (retry > 0) {
+            const delayMs = retry * 2000 // 2s, 4s delays
+            console.log(`   ⏳ Waiting ${delayMs / 1000}s before retry ${retry}...`)
+            await sleep(delayMs)
+        }
 
-            // Use FormData-style encoding that matches curl --data-urlencode
-            const body = 'data=' + encodeURIComponent(query)
+        for (const endpoint of OVERPASS_ENDPOINTS) {
+            try {
+                console.log(`   Trying: ${endpoint}`)
 
-            const response = await fetch(endpoint, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                },
-                body,
-            })
+                const body = 'data=' + encodeURIComponent(query)
 
-            if (response.ok) {
-                const data = await response.json()
-                const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
-                console.log(`✅ [OSM] Fetched in ${elapsed}s from ${endpoint}`)
-                return data
+                const controller = new AbortController()
+                const timeoutId = setTimeout(() => controller.abort(), 30000) // 30s timeout
+
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body,
+                    signal: controller.signal,
+                })
+
+                clearTimeout(timeoutId)
+
+                if (response.ok) {
+                    const data = await response.json()
+                    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+                    console.log(`✅ [OSM] Fetched in ${elapsed}s from ${endpoint}`)
+                    return data
+                }
+
+                // Rate limited - wait and try next
+                if (response.status === 429) {
+                    console.log(`   ⚠️ ${endpoint}: Rate limited (429), waiting...`)
+                    await sleep(3000)
+                    continue
+                }
+
+                console.log(`   ❌ ${endpoint}: ${response.status} ${response.statusText}`)
+                lastError = new Error(`${response.status} ${response.statusText}`)
+
+            } catch (err: any) {
+                if (err.name === 'AbortError') {
+                    console.log(`   ❌ ${endpoint}: Timeout`)
+                    lastError = new Error('Request timeout')
+                } else {
+                    console.log(`   ❌ ${endpoint}: ${err.message}`)
+                    lastError = err
+                }
             }
-
-            // Log the error but try next endpoint
-            console.log(`   ❌ ${endpoint}: ${response.status} ${response.statusText}`)
-            lastError = new Error(`${response.status} ${response.statusText}`)
-
-        } catch (err: any) {
-            console.log(`   ❌ ${endpoint}: ${err.message}`)
-            lastError = err
         }
     }
 
-    throw new Error(`All Overpass endpoints failed. Last error: ${lastError?.message || 'Unknown'}`)
+    throw new Error(`All Overpass endpoints failed after ${maxRetries + 1} attempts. Last error: ${lastError?.message || 'Unknown'}. Please wait a few minutes and try again.`)
 }
 
 /**

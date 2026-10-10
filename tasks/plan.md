@@ -1,6 +1,7 @@
 # Stravart Execution Plan
 
 *Created: 2026-09-24*
+*Updated: 2026-09-26*
 *Based on: SPEC.md v0.1.0*
 
 ---
@@ -9,91 +10,107 @@
 
 | Aspect | Status |
 |--------|--------|
-| Branch | `Graph-based-Routing` (9 commits ahead of main) |
+| Branch | `Graph-based-Routing` (ahead of main) |
 | Core routing | Working worldwide via dynamic OSM |
 | Quality metrics | Implemented with auto-retry |
+| Overpass API | 5 endpoints with retry logic |
+| Backtracking | Prevention implemented |
 | Test coverage | Manual only |
 | Shapes | Heart, Star, Circle, Square |
-| Production ready | ⚠️ No - see Phase 0 |
+| Production ready | Needs validation |
 
 ---
 
-## Phase 0: Architecture Assessment (BLOCKING)
+## Recent Fixes (2026-09-26)
 
-**Goal:** Understand if current OSM fetching approach is viable before investing in features.
+### Overpass API Reliability
+- **Problem:** Single endpoint failing with 406/429 errors
+- **Solution:**
+  - Added 5 fallback endpoints
+  - Retry logic with 2s/4s delays
+  - 30s timeout per request
+  - Rate-limit detection (429) with backoff
 
-### Current Architecture Concerns
+### Backtracking Prevention
+- **Problem:** Routes went down dead-end streets and returned
+- **Solution:**
+  - Dead-end detection (`isDeadEndNode` - degree <= 1)
+  - Avoid snapping waypoints to dead-ends
+  - Post-processing to remove backtracking (detect repeated nodes)
 
-| Issue | Current State | Risk Level |
-|-------|---------------|------------|
-| API Dependency | Public `overpass-api.de` | ⚠️ No SLA |
-| Rate Limiting | None implemented | 🔴 High |
-| Cache | In-memory, 5 entries, 30min TTL | 🔴 Not scalable |
-| Retry Logic | None | ⚠️ Medium |
-| Concurrent Requests | No deduplication | ⚠️ Medium |
+### Geolocation
+- **Problem:** "Use My Location" silently failing
+- **Solution:** Secure context check + detailed error messages
+
+---
+
+## Phase 0: Architecture Assessment
+
+**Status:** Partially addressed - API reliability improved
+
+### Current Architecture
+
+| Issue | Previous State | Current State |
+|-------|---------------|---------------|
+| API Dependency | Single endpoint | 5 endpoints with fallback |
+| Rate Limiting | None | Retry with backoff |
+| Cache | In-memory, 5 entries | Same (acceptable for now) |
+| Retry Logic | None | 3 attempts with delays |
+| Timeout | None | 30s per request |
 
 ### Feasibility by Scale
 
 | Use Case | Feasible? |
 |----------|-----------|
-| Personal/demo | ✅ Yes |
-| < 100 users/day | ✅ Yes |
-| 100-1000 users/day | ⚠️ Needs work |
-| 1000+ users/day | 🔴 Needs infrastructure |
-
-### Decision Needed
-
-Before proceeding, decide:
-1. **Stay small** - Accept current limits, focus on quality
-2. **Plan for scale** - Invest in infrastructure (self-hosted Overpass, Redis cache)
-3. **Hybrid** - Validate first, defer scaling until needed
+| Personal/demo | Yes |
+| < 100 users/day | Yes |
+| 100-1000 users/day | Needs monitoring |
+| 1000+ users/day | Needs infrastructure |
 
 ---
 
 ## Phase 1: Validate Route Quality
 
-**Goal:** Confirm shapes generate rideable, recognizable routes before any cleanup or merge.
+**Goal:** Confirm shapes generate rideable, recognizable routes.
 
 ### 1.1 Test all shapes at multiple locations
-- [ ] Heart: Munich, Paris, New York (small/medium/large)
-- [ ] Star: Munich, Paris, New York (small/medium/large)
-- [ ] Circle: Munich, Paris, New York (small/medium/large)
-- [ ] Square: Munich, Paris, New York (small/medium/large)
-- [ ] Document quality metrics for each
+- [ ] Heart: Munich (1km, 5km, 15km)
+- [ ] Star: Munich (1km, 5km, 15km)
+- [ ] Circle: Munich (1km, 5km, 15km)
+- [ ] Square: Munich (1km, 5km, 15km)
+- [ ] One shape at non-European location
 
-### 1.2 Identify specific issues
-- [ ] List shapes with > 20% distance error
-- [ ] List routes with 0-distance segments (waypoint sticking)
-- [ ] List routes with detour ratio > 5x
-- [ ] Categorize: fixable vs acceptable vs needs redesign
+### 1.2 Verify backtracking fixes
+- [ ] Generate routes and check for detours
+- [ ] Verify dead-end avoidance logging appears
+- [ ] Verify backtracking removal logging appears
 
 ### 1.3 Visual inspection
-- [ ] Load test GeoJSON in geojson.io or similar
+- [ ] Load test GeoJSON in geojson.io
 - [ ] Verify shapes are recognizable
-- [ ] Check routes follow actual streets (not cutting through buildings)
+- [ ] Check routes follow actual streets
 
-### Checkpoint: Know which shapes work, which need fixing
+### Checkpoint: Know which shapes work, which need more work
 
 ---
 
-## Phase 2: Fix Critical Issues
+## Phase 2: Fix Remaining Issues
 
-**Goal:** Address blocking quality problems identified in Phase 1.
+**Goal:** Address quality problems found in Phase 1.
 
-### 2.1 Fix waypoint sticking (0-distance segments)
-- [ ] Investigate why some waypoints don't advance
-- [ ] Fix snapping or routing logic
-- [ ] Verify fix across all shapes
+### 2.1 Waypoint issues - PARTIALLY DONE
+- [x] Dead-end avoidance implemented
+- [x] Backtracking removal implemented
+- [ ] Verify fixes work across all shapes
 
-### 2.2 Improve circle quality (currently ~25% error)
+### 2.2 Circle quality (currently ~25% error)
 - [ ] Analyze why circle has highest error
 - [ ] Experiment with waypoint density
-- [ ] Experiment with corridor width
 - [ ] Target: < 20% error
 
-### 2.3 Heart shape improvements (currently 22% error)
-- [ ] Reduce 0-distance segments
-- [ ] Improve the "dip" at top of heart routing
+### 2.3 Heart quality (currently ~22% error)
+- [ ] Reduce distance error
+- [ ] Verify heart "dip" routes correctly
 - [ ] Target: < 15% error
 
 ### Checkpoint: All shapes pass quality thresholds
@@ -106,90 +123,44 @@ Before proceeding, decide:
 
 ### 3.1 Pre-merge checks
 - [ ] `npm run build` passes
-- [ ] `npm run lint` passes (fix any errors)
-- [ ] All shapes validated in Phase 1-2
+- [ ] `npm run lint` passes
+- [ ] All shapes validated
 
 ### 3.2 Merge
 - [ ] Create PR or direct merge
-- [ ] Update CLAUDE.md (mark legacy APIs)
+- [ ] Update CLAUDE.md
 - [ ] Push to origin
 
 ### 3.3 Post-merge
 - [ ] Verify deployment works
 - [ ] Test one route in production
-
-### Checkpoint: v0.2.0 - Worldwide routing on main
+- [ ] Tag as v0.2.0
 
 ---
 
-## Phase 4: Polish & UX (Future)
+## Phase 4+ (Future)
 
 - Route preview before generation
 - Loading states and progress indicators
-- Error messages for common failures
-- Mobile-optimized UI
+- More shapes (triangle, pentagon, figure-8)
+- Custom SVG upload improvements
+- Self-hosted Overpass (if scaling needed)
 
 ---
 
-## Phase 5: Expand Shapes (Future)
+## Key Files Changed (2026-09-26)
 
-- Triangle
-- Pentagon
-- Infinity/Figure-8
-- Custom SVG upload
-
----
-
-## Phase 6: Infrastructure (Future, if scaling)
-
-- Self-hosted Overpass or tile cache
-- Redis persistent cache
-- Rate limiting
-- Request queuing
-- Retry logic with backoff
-
----
-
-## Dependency Graph
-
-```
-Phase 0 (Architecture Decision)
-    │
-    ▼
-Phase 1 (Validate Quality)
-    │
-    ├── 1.1 Test all shapes
-    ├── 1.2 Identify issues
-    └── 1.3 Visual inspection
-    │
-    ▼
-Phase 2 (Fix Critical Issues)  ◄── Only if Phase 1 finds problems
-    │
-    ├── 2.1 Waypoint sticking
-    ├── 2.2 Circle quality
-    └── 2.3 Heart quality
-    │
-    ▼
-Phase 3 (Merge)
-    │
-    ▼
-Phase 4+ (Future work)
-```
-
----
-
-## Files to Keep (Do NOT delete prematurely)
-
-| File/Directory | Reason |
-|----------------|--------|
-| `test-outputs/*.geojson` | Validation artifacts, useful for debugging |
-| `fixtures/munich-streets.geojson` | Fallback/comparison baseline |
-| `scripts/*` | Testing and debugging utilities |
+| File | Changes |
+|------|---------|
+| `lib/graph/osm-fetcher.ts` | Multiple endpoints, retry logic, timeouts |
+| `lib/graph/curve-router.ts` | Dead-end avoidance, backtracking removal |
+| `app/api/optimized-route/route.ts` | Pass `findKNearestNodes` to router |
+| `app/page.tsx` | Geolocation secure context check |
 
 ---
 
 ## Open Questions
 
-1. What scale are we targeting? (affects infrastructure decisions)
-2. Is 22% distance error acceptable for heart, or must it be lower?
+1. Is current API reliability sufficient for launch?
+2. What's the acceptable distance error threshold per shape?
 3. Should we add automated tests before or after merge?
