@@ -414,6 +414,148 @@ function getShapeType(shapeName: string): 'heart' | 'circle' | 'star' | 'square'
 }
 
 /**
+ * Calculate perpendicular distance from point P to line segment AB
+ * Returns the shortest distance from P to the line, or to the segment endpoints if P projects outside AB
+ */
+function perpendicularDistance(
+    p: { lat: number; lng: number },
+    a: { lat: number; lng: number },
+    b: { lat: number; lng: number }
+): number {
+    const abLat = b.lat - a.lat
+    const abLng = b.lng - a.lng
+    const apLat = p.lat - a.lat
+    const apLng = p.lng - a.lng
+
+    const abLengthSq = abLat * abLat + abLng * abLng
+
+    if (abLengthSq === 0) {
+        // A and B are the same point
+        return haversineDistance(p, a)
+    }
+
+    // Project P onto line AB, clamped to segment
+    let t = (apLat * abLat + apLng * abLng) / abLengthSq
+    t = Math.max(0, Math.min(1, t))
+
+    const closest = {
+        lat: a.lat + t * abLat,
+        lng: a.lng + t * abLng
+    }
+
+    return haversineDistance(p, closest)
+}
+
+/**
+ * Prune redundant waypoints that lie approximately on the path between their neighbors.
+ * A waypoint B is redundant if it's very close to the line segment A→C.
+ * This prevents unnecessary detours to reach waypoints that the route would pass anyway.
+ */
+function pruneRedundantWaypoints(
+    waypoints: Array<{ lat: number; lng: number; nodeId: string; snapDistance: number }>,
+    thresholdMeters: number = 40  // Waypoints within 40m of the A→C line are considered redundant
+): Array<{ lat: number; lng: number; nodeId: string; snapDistance: number }> {
+    if (waypoints.length <= 3) return waypoints
+
+    const pruned: typeof waypoints = [waypoints[0]]  // Always keep first waypoint
+
+    for (let i = 1; i < waypoints.length - 1; i++) {
+        const prev = pruned[pruned.length - 1]
+        const curr = waypoints[i]
+        const next = waypoints[i + 1]
+
+        // Calculate perpendicular distance from current to line prev→next
+        const perpDist = perpendicularDistance(curr, prev, next)
+
+        // Also check: is curr roughly between prev and next? (not a backtrack)
+        const prevToNext = haversineDistance(prev, next)
+        const prevToCurr = haversineDistance(prev, curr)
+        const currToNext = haversineDistance(curr, next)
+
+        // If curr is roughly inline (perpendicular distance small) AND
+        // the path through curr isn't significantly longer than direct path
+        const pathThroughCurr = prevToCurr + currToNext
+        const detourRatio = prevToNext > 0 ? pathThroughCurr / prevToNext : 1
+
+        // Keep waypoint if:
+        // 1. It's far from the line (significant shape feature), OR
+        // 2. Going through it would be a significant detour (> 1.3x)
+        const isSignificantShapeFeature = perpDist > thresholdMeters
+        const wouldCauseDetour = detourRatio > 1.3
+
+        if (isSignificantShapeFeature || wouldCauseDetour) {
+            pruned.push(curr)
+        }
+        // Otherwise, skip this waypoint - it's redundant
+    }
+
+    // Always keep last waypoint (for loop closure)
+    pruned.push(waypoints[waypoints.length - 1])
+
+    return pruned
+}
+
+/**
+ * Calculate average edge length in the graph to determine optimal waypoint spacing
+ */
+function calculateAverageEdgeLength(graph: StreetGraph): number {
+    let totalLength = 0
+    let edgeCount = 0
+
+    graph.forEachEdge((edge) => {
+        const attrs = graph.getEdgeAttributes(edge)
+        if (attrs.distance && attrs.distance > 0) {
+            totalLength += attrs.distance
+            edgeCount++
+        }
+    })
+
+    if (edgeCount === 0) return 100  // Default fallback
+
+    return totalLength / edgeCount
+}
+
+/**
+ * Calculate optimal waypoint count based on route length and street network density
+ *
+ * The idea: waypoint spacing should be ~2-3x the average edge length
+ * This ensures each segment can be routed through 2-3 street edges naturally
+ */
+function calculateOptimalWaypointCount(
+    targetDistanceKm: number,
+    avgEdgeLength: number,
+    shapeType: string
+): { count: number; spacing: number } {
+    // Target spacing: 2x average edge length, with min/max bounds
+    const minSpacing = 80   // Never closer than 80m (too precise for street snapping)
+    const maxSpacing = 500  // Never more than 500m apart (shape loses definition)
+
+    // Base spacing on edge length: 2x average edge for good routing flexibility
+    let targetSpacing = Math.max(minSpacing, Math.min(maxSpacing, avgEdgeLength * 2))
+
+    // Adjust for shape complexity - hearts need more points at the curves
+    const complexityMultiplier: Record<string, number> = {
+        heart: 0.85,   // Tighter spacing for complex curves
+        star: 0.8,     // Tightest for star points
+        circle: 1.2,   // Can be sparser for smooth circle
+        square: 1.1,   // Slightly sparser for straight edges
+    }
+
+    targetSpacing *= complexityMultiplier[shapeType] || 1.0
+
+    // Calculate waypoint count from perimeter and spacing
+    const perimeterMeters = targetDistanceKm * 1000
+    let count = Math.round(perimeterMeters / targetSpacing)
+
+    // Bounds: minimum 16 (maintain shape), maximum 80 (avoid too many points)
+    count = Math.max(16, Math.min(80, count))
+
+    const actualSpacing = perimeterMeters / count
+
+    return { count, spacing: actualSpacing }
+}
+
+/**
  * Calculate radius from target distance based on shape type
  */
 function calculateRadius(targetDistanceKm: number, shapeType: string): number {
@@ -445,6 +587,7 @@ function calculateRadius(targetDistanceKm: number, shapeType: string): number {
 interface RouteResult {
     segments: Array<{ distance: number; coordinates: Array<{ lat: number; lng: number }>; nodeIds: string[] }>
     snappedWaypoints: Array<{ lat: number; lng: number; nodeId: string; snapDistance: number }>
+    waypointsPruned: number
     params: OptimizationParams
     metrics: QualityMetrics
     qualityAssessment: { passed: boolean; score: number; issues: string[] }
@@ -573,7 +716,14 @@ function generateRouteWithRotation(
 
     if (snappedWaypoints.length < 3) return null
 
-    const avgSnapDistance = totalSnapDistance / snappedWaypoints.length
+    // Prune redundant waypoints that lie on the path between neighbors
+    // This prevents unnecessary detours to waypoints that the route would pass through anyway
+    const prunedWaypoints = pruneRedundantWaypoints(snappedWaypoints, 25)  // 25m threshold - conservative
+    const waypointsPruned = snappedWaypoints.length - prunedWaypoints.length
+
+    if (prunedWaypoints.length < 3) return null
+
+    const avgSnapDistance = totalSnapDistance / prunedWaypoints.length
 
     // Generate dense shape points for corridor
     const denseShapePoints = transformShapePoints(
@@ -591,11 +741,11 @@ function generateRouteWithRotation(
     // Much stronger direction penalty to prevent U-turns and backtracking
     const directionPenalty = Math.min(1.5, 1.0 + (targetDistanceKm / 100))
 
-    // Route
-    const snappedCoords = snappedWaypoints.map(wp => ({ lat: wp.lat, lng: wp.lng }))
+    // Route using pruned waypoints
+    const prunedCoords = prunedWaypoints.map(wp => ({ lat: wp.lat, lng: wp.lng }))
     const segments = routeShapeWithCurveFollowing(
         graph,
-        snappedCoords,
+        prunedCoords,
         denseShapePoints,
         (coord) => spatialIndex.findNearest(coord),
         {
@@ -609,12 +759,13 @@ function generateRouteWithRotation(
     if (!segments || segments.length === 0) return null
 
     // Calculate quality metrics
-    const metrics = calculateMetrics(segments, targetDistanceKm, snappedCoords)
+    const metrics = calculateMetrics(segments, targetDistanceKm, prunedCoords)
     const qualityAssessment = assessQuality(metrics)
 
     return {
         segments,
-        snappedWaypoints,
+        snappedWaypoints: prunedWaypoints,
+        waypointsPruned,
         params,
         metrics,
         qualityAssessment,
@@ -635,6 +786,50 @@ const ROTATION_OFFSETS = [
     Math.PI / 4,            // +45°
     -Math.PI / 4,           // -45°
 ]
+
+// Position offsets to try (as fraction of shape radius) if rotation doesn't help
+// These shift the entire shape in cardinal and diagonal directions
+const POSITION_OFFSET_DIRECTIONS = [
+    { name: 'N',  dLat: 1,  dLng: 0 },
+    { name: 'S',  dLat: -1, dLng: 0 },
+    { name: 'E',  dLat: 0,  dLng: 1 },
+    { name: 'W',  dLat: 0,  dLng: -1 },
+    { name: 'NE', dLat: 0.7, dLng: 0.7 },
+    { name: 'NW', dLat: 0.7, dLng: -0.7 },
+    { name: 'SE', dLat: -0.7, dLng: 0.7 },
+    { name: 'SW', dLat: -0.7, dLng: -0.7 },
+]
+
+// Position offset magnitudes to try (as fraction of shape radius)
+const POSITION_OFFSET_MAGNITUDES = [0.3, 0.5, 0.7]
+
+/**
+ * Apply a position offset to optimization params
+ * @param baseParams - Original optimization parameters
+ * @param direction - Direction to offset {dLat, dLng} normalized
+ * @param magnitude - How far to offset as fraction of shape scale
+ * @param centerLat - Center latitude for degree conversion
+ */
+function applyPositionOffset(
+    baseParams: OptimizationParams,
+    direction: { dLat: number; dLng: number },
+    magnitude: number,
+    centerLat: number
+): OptimizationParams {
+    // Convert offset from meters to degrees
+    const offsetMeters = baseParams.scale * magnitude
+    const metersPerDegreeLat = 111320
+    const metersPerDegreeLng = 40075000 * Math.cos((centerLat * Math.PI) / 180) / 360
+
+    const offsetLat = (direction.dLat * offsetMeters) / metersPerDegreeLat
+    const offsetLng = (direction.dLng * offsetMeters) / metersPerDegreeLng
+
+    return {
+        ...baseParams,
+        translateLat: baseParams.translateLat + offsetLat,
+        translateLng: baseParams.translateLng + offsetLng
+    }
+}
 
 // ========================================
 // API ENDPOINT
@@ -766,13 +961,16 @@ export async function POST(req: Request) {
         let bestResult: RouteResult | null = null
         let bestScore = Infinity
         let attemptCount = 0
-        const maxAttempts = ROTATION_OFFSETS.length
+        let bestRotationOffset = 0
+        let usedPositionOffset: { direction: string; magnitude: number } | null = null
 
-        // Try generating routes with different rotation offsets
+        // ---- PHASE A: Try rotation offsets at original position ----
+        console.log('   Phase A: Trying rotation offsets at original position...')
+
         for (const rotationOffset of ROTATION_OFFSETS) {
             attemptCount++
             const rotationDegrees = (rotationOffset * 180 / Math.PI).toFixed(0)
-            console.log(`   Attempt ${attemptCount}/${maxAttempts}: rotation offset ${rotationDegrees}°`)
+            console.log(`   [A${attemptCount}] Rotation ${rotationDegrees}°`)
 
             const result = generateRouteWithRotation(
                 graph,
@@ -797,6 +995,7 @@ export async function POST(req: Request) {
                 console.log(`     ✅ Quality passed!`)
                 bestResult = result
                 bestScore = qualityAssessment.score
+                bestRotationOffset = rotationOffset
                 break  // Found a good route, stop searching
             }
 
@@ -804,7 +1003,67 @@ export async function POST(req: Request) {
             if (qualityAssessment.score < bestScore) {
                 bestResult = result
                 bestScore = qualityAssessment.score
+                bestRotationOffset = rotationOffset
                 console.log(`     📊 New best (issues: ${qualityAssessment.issues.join(', ')})`)
+            }
+        }
+
+        // ---- PHASE B: If quality didn't pass, try position offsets ----
+        if (bestResult && !bestResult.qualityAssessment.passed) {
+            console.log('   Phase B: Trying position offsets to avoid barriers...')
+
+            // Try different position offsets with the best rotation found
+            positionLoop:
+            for (const magnitude of POSITION_OFFSET_MAGNITUDES) {
+                for (const direction of POSITION_OFFSET_DIRECTIONS) {
+                    attemptCount++
+
+                    // Apply position offset to optimal params
+                    const offsetParams = applyPositionOffset(
+                        optimalParams,
+                        direction,
+                        magnitude,
+                        location.lat
+                    )
+
+                    console.log(`   [B${attemptCount - ROTATION_OFFSETS.length}] Position ${direction.name} ${(magnitude * 100).toFixed(0)}% (${Math.round(optimalParams.scale * magnitude)}m)`)
+
+                    // Try with the best rotation found in Phase A
+                    const result = generateRouteWithRotation(
+                        graph,
+                        spatialIndex,
+                        offsetParams,
+                        bestRotationOffset,
+                        shapeType,
+                        targetDistanceKm,
+                        waypointCount,
+                        location.lat
+                    )
+
+                    if (!result) {
+                        console.log(`     ❌ Route generation failed`)
+                        continue
+                    }
+
+                    const { qualityAssessment, metrics } = result
+                    console.log(`     Score: ${qualityAssessment.score.toFixed(1)}, Distance error: ${(metrics.distanceError * 100).toFixed(1)}%`)
+
+                    if (qualityAssessment.passed) {
+                        console.log(`     ✅ Quality passed with position offset!`)
+                        bestResult = result
+                        bestScore = qualityAssessment.score
+                        usedPositionOffset = { direction: direction.name, magnitude }
+                        break positionLoop
+                    }
+
+                    // Track best result even if it doesn't pass thresholds
+                    if (qualityAssessment.score < bestScore) {
+                        bestResult = result
+                        bestScore = qualityAssessment.score
+                        usedPositionOffset = { direction: direction.name, magnitude }
+                        console.log(`     📊 New best (issues: ${qualityAssessment.issues.join(', ')})`)
+                    }
+                }
             }
         }
 
@@ -819,10 +1078,16 @@ export async function POST(req: Request) {
 
         // Log final result
         if (bestResult.qualityAssessment.passed) {
-            console.log(`🎉 Found quality route on attempt ${attemptCount}`)
+            const offsetInfo = usedPositionOffset
+                ? ` with position offset ${usedPositionOffset.direction} ${(usedPositionOffset.magnitude * 100).toFixed(0)}%`
+                : ''
+            console.log(`🎉 Found quality route on attempt ${attemptCount}${offsetInfo}`)
         } else {
             console.log(`⚠️ Using best available route (score: ${bestScore.toFixed(1)})`)
             console.log(`   Issues: ${bestResult.qualityAssessment.issues.join(', ')}`)
+            if (usedPositionOffset) {
+                console.log(`   Best position offset: ${usedPositionOffset.direction} ${(usedPositionOffset.magnitude * 100).toFixed(0)}%`)
+            }
         }
 
         // ========================================
@@ -865,6 +1130,7 @@ export async function POST(req: Request) {
                 corridorWidth: Math.round(bestResult.corridorWidth),
                 directionPenalty: bestResult.directionPenalty,
                 waypointCount: bestResult.snappedWaypoints.length,
+                waypointsPruned: bestResult.waypointsPruned,
                 avgSnapDistance: Math.round(bestResult.avgSnapDistance),
                 maxSnapDistance: Math.round(bestResult.maxSnapDistance),
                 graphLoadTimeMs: graphTime,
@@ -883,6 +1149,10 @@ export async function POST(req: Request) {
                 suspiciousSegments: bestResult.metrics.suspiciousSegments,
                 uTurnCount: bestResult.metrics.uTurnCount,
                 attemptCount,
+                // Position offset info (if used)
+                positionOffsetUsed: usedPositionOffset !== null,
+                positionOffsetDirection: usedPositionOffset?.direction || null,
+                positionOffsetMagnitude: usedPositionOffset ? `${(usedPositionOffset.magnitude * 100).toFixed(0)}%` : null,
             }
         }
 
@@ -914,6 +1184,8 @@ export async function GET() {
             'Automatic bbox calculation from shape',
             'In-memory graph caching (30 min TTL)',
             'Quality metrics and auto-retry',
+            'Rotation offsets (7 attempts: 0°, ±15°, ±30°, ±45°)',
+            'Position offsets to avoid barriers (8 directions × 3 magnitudes)',
         ],
         example: {
             method: 'POST',
